@@ -5,11 +5,6 @@
 __pycache__/
 *.pyc
 
-# PyInstaller / installer build artifacts
-build/
-dist/
-installer/output/
-
 # Runtime output archives created by the app
 previous_runs/
 

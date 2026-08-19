@@ -18,7 +18,7 @@ from qfluentwidgets import (
 )
 
 from gui import settings as app_settings
-from gui.worker import PipelineWorker
+from gui.worker import PipelineWorker, UpdateWorker
 from gui import updater
 from version import __version__
 
@@ -296,6 +296,7 @@ class AboutInterface(QWidget):
         self.update_status = BodyLabel("", self)
         layout.addWidget(self.update_status)
         layout.addStretch(1)
+        self.update_worker = None
 
     def _on_theme_changed(self, checked):
         setTheme(Theme.DARK if checked else Theme.LIGHT)
@@ -304,16 +305,30 @@ class AboutInterface(QWidget):
         app_settings.save(cfg)
 
     def _on_check_update(self):
-        has_update, latest_tag, download_url, error = updater.check_for_update()
+        self.update_button.setEnabled(False)
+        self.update_status.setText("Checking for updates...")
+        has_update, latest_tag, error = updater.check_for_update()
         if error:
             self.update_status.setText(f"Could not check for updates: {error}")
-        elif has_update:
-            self.update_status.setText(f"Update available: {latest_tag}. Downloading...")
-            dest = updater.download_and_launch_installer(download_url)
-            self.update_status.setText(f"Update downloaded to {dest}. Installer launched - "
-                                        f"please restart the app once it finishes.")
-        else:
+            self.update_button.setEnabled(True)
+        elif not has_update:
             self.update_status.setText(f"You're up to date (latest: {latest_tag or __version__}).")
+            self.update_button.setEnabled(True)
+        else:
+            self.update_status.setText(f"Update available: {latest_tag}. Updating...")
+            self.update_worker = UpdateWorker(self)
+            self.update_worker.progress.connect(self.update_status.setText)
+            self.update_worker.finished_ok.connect(self._on_update_finished)
+            self.update_worker.failed.connect(self._on_update_failed)
+            self.update_worker.start()
+
+    def _on_update_finished(self, message):
+        self.update_status.setText(message)
+        self.update_button.setEnabled(True)
+
+    def _on_update_failed(self, message):
+        self.update_status.setText(message)
+        self.update_button.setEnabled(True)
 
 
 class MainWindow(FluentWindow):

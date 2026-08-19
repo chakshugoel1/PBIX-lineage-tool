@@ -3,6 +3,25 @@
 Traces every table in a Power BI report (.pbix) back through its Power Query
 dataflow dependencies to the final physical source (Oracle schema/table,
 SharePoint/Excel file, CSV, Web URL), and produces an Excel workbook report.
+Comes with a desktop GUI (`app.py`) so end users don't need to touch a
+command line at all.
+
+## Install on a new machine (recommended: desktop app)
+
+1. Download [`Install.cmd`](https://raw.githubusercontent.com/chakshugoel1/PBIX-lineage-tool/main/Install.cmd).
+2. Double-click it. It will (via `winget`, if not already present):
+   - install Python and Git,
+   - download the tool to `%LOCALAPPDATA%\PBIXLineageTool`,
+   - create a private virtual environment and install dependencies,
+   - create a **Start Menu shortcut** named "PBIX Lineage Tool".
+3. From then on, just search "PBIX Lineage Tool" in the Start Menu and
+   double-click it — no other steps.
+
+This is a plain script-based installer (no compiled `.exe`), so it isn't
+subject to Windows Defender/SmartScreen blocking unsigned new binaries, and
+there's nothing to code-sign. Re-running `Install.cmd` later also updates
+the tool in place (`git pull` + dependency re-install) — the same thing the
+in-app "Check for Updates" button on the About page does.
 
 ## Requirements
 
@@ -10,7 +29,7 @@ SharePoint/Excel file, CSV, Web URL), and produces an Excel workbook report.
   interpreter used to create the venv below).
 - Windows PowerShell.
 
-## Setup on a new machine
+## Manual/developer setup
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File setup.ps1
@@ -18,7 +37,8 @@ powershell -ExecutionPolicy Bypass -File setup.ps1
 ```
 
 This creates a `.venv` folder and installs the exact pinned dependency
-versions from `requirements.txt` (`pbixray`, `openpyxl`, `pandas`, `numpy`).
+versions from `requirements.txt` (`pbixray`, `openpyxl`, `pandas`, `numpy`,
+plus the GUI's PySide6/qfluentwidgets/requests dependencies).
 
 If `python` on PATH is not 3.12, edit the `$pythonExe` line at the top of
 `setup.ps1` to point at your 3.12 interpreter (e.g.
@@ -28,6 +48,8 @@ If `python` on PATH is not 3.12, edit the `$pythonExe` line at the top of
 C:\Path\To\Python312\python.exe -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
+
+To launch the GUI locally: `.venv\Scripts\python.exe app.py`
 
 ## Pointing the tool at your own files
 

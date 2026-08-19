@@ -13,6 +13,7 @@ from PySide6.QtCore import QThread, Signal
 
 import build_lineage_report as blr
 import build_dataflow_table_lineage_report as dtlr
+from gui import updater
 
 
 class _StreamEmitter(io.TextIOBase):
@@ -96,3 +97,18 @@ class PipelineWorker(QThread):
             self.failed.emit(error_message)
         else:
             self.finished_ok.emit(summary)
+
+
+class UpdateWorker(QThread):
+    """Runs `git pull` + a dependency re-install on a background thread so
+    the UI stays responsive (see gui/updater.py for the actual work)."""
+    progress = Signal(str)
+    finished_ok = Signal(str)
+    failed = Signal(str)
+
+    def run(self):
+        success, message = updater.run_update(progress_cb=self.progress.emit)
+        if success:
+            self.finished_ok.emit(message)
+        else:
+            self.failed.emit(message)
