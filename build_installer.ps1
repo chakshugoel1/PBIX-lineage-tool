@@ -10,8 +10,12 @@ Write-Host "Building standalone executable with PyInstaller..."
 
 $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
 if (-not $iscc) {
-    $default = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-    if (Test-Path $default) { $iscc = $default } else { $iscc = $null }
+    $candidates = @(
+        "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+        "C:\Program Files\Inno Setup 6\ISCC.exe",
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+    )
+    $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 if (-not $iscc) {
     Write-Warning "Inno Setup (ISCC.exe) not found. Install it from https://jrsoftware.org/isdl.php, then re-run this script to produce installer\output\PBIXLineageToolSetup.exe."
@@ -19,6 +23,8 @@ if (-not $iscc) {
 }
 
 Write-Host "Building installer with Inno Setup..."
-& $iscc "installer\setup.iss"
+$versionLine = Select-String -Path "version.py" -Pattern '__version__\s*=\s*"([^"]+)"'
+$appVersion = $versionLine.Matches[0].Groups[1].Value
+& $iscc "/DMyAppVersion=$appVersion" "installer\setup.iss"
 
 Write-Host "Done: installer\output\PBIXLineageToolSetup.exe"

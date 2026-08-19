@@ -1,13 +1,19 @@
 ; installer/setup.iss
 ; Build with Inno Setup (https://jrsoftware.org/isinfo.php) after producing
 ; dist\PBIXLineageTool\ via:  pyinstaller PBIXLineageTool.spec
-;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss
+;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=1.0.0 installer\setup.iss
+; (build_installer.ps1 does both steps and fills in MyAppVersion from version.py)
 ;
 ; Produces installer\output\PBIXLineageToolSetup.exe - a single file a user
 ; double-clicks to install, with no other prompts required.
 
 #define MyAppName "PBIX Lineage Tool"
-#define MyAppVersion GetFileVersion("..\dist\PBIXLineageTool\PBIXLineageTool.exe")
+; MyAppVersion is normally passed in via "ISCC /DMyAppVersion=X.Y.Z setup.iss"
+; (build_installer.ps1 does this, reading the value from version.py) since
+; the PyInstaller-built exe has no embedded Windows version resource to read.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0"
+#endif
 #define MyAppPublisher "Your Organization"
 #define MyAppExeName "PBIXLineageTool.exe"
 

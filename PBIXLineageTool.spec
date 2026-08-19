@@ -3,6 +3,7 @@
 # Produces a standalone dist/PBIXLineageTool/PBIXLineageTool.exe that needs
 # no Python installation on the target machine.
 import sys
+import os
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
@@ -18,6 +19,12 @@ for pkg in ("pbixray", "pandas", "openpyxl", "qfluentwidgets"):
     hiddenimports += h
 
 hiddenimports += collect_submodules("apsw")
+
+# pandas/numpy ship their entire test suites; collect_all() pulls those in
+# too, which massively slows the build and bloats the exe for no benefit
+# in a packaged app, so strip anything under a "tests" subpackage/file.
+hiddenimports = [m for m in hiddenimports if ".tests." not in m and not m.endswith(".tests")]
+datas = [d for d in datas if f"{os.sep}tests{os.sep}" not in d[0]]
 
 a = Analysis(
     ["app.py"],
