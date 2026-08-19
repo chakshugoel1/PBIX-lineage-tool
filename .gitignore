@@ -1,0 +1,28 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# PyInstaller / installer build artifacts
+build/
+dist/
+installer/output/
+
+# Runtime output archives created by the app
+previous_runs/
+
+# Proprietary sample data used for local development/testing only -
+# do not publish real client PBIX files, dataflow exports, or generated
+# reports built from them to this public repo.
+DTS - CashPlus-Dashboard (1).pbix
+CASHPLUS-DASHBOARD 1.xlsx
+Generated_CashPlus_Lineage.xlsx
+Dataflow_Table_Lineage_Report.xlsx
+Final_Source_Comparison.xlsx
+Final_Source_Comparison_backup.xlsx
+guid_dataflow_names.json
+PowerBIDataflows/
+_validation_output.txt
+PBIX → Dataflow → Source Lineage Project Status.docx

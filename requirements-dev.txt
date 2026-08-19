@@ -1,0 +1,2 @@
+# Only needed to build the standalone .exe / installer, not to run the app.
+pyinstaller==6.22.2
