@@ -137,22 +137,29 @@ future PBIX files that don't have a reference workbook.
 
 ## Dataflow Data Export ("Dataflow Export" tab)
 
-Separate from the lineage pipeline above: exports the **actual data rows**
-of a single Power BI Gen1 Dataflow entity/table to a local CSV file, using
-PowerShell (`powershell/Export-DataflowEntity.ps1`) invoked from
-`dataflow_export.py`. This is isolated from the lineage-report code path —
-it cannot affect `build_lineage_report.py` / `build_dataflow_table_lineage_report.py`.
+Separate from the lineage pipeline above: lets you open a Power BI Gen1
+Dataflow's own service page in an **embedded browser view inside the app**
+and download its `.json` export (same format as `PowerBIDataflows/*.json`,
+used by the lineage pipeline) straight into a configured output folder.
+This is isolated from the lineage-report code path — it cannot affect
+`build_lineage_report.py` / `build_dataflow_table_lineage_report.py`.
+
+There is no separate authentication code, REST API calls, or PowerShell
+involved — it's a real, embedded Power BI service page (via Qt's
+`QWebEngineView`, the same Chromium engine that already ships with
+`PySide6`, so **no new dependency or download is required**). You sign in
+and use Power BI's own "Export .json" action yourself, exactly as you would
+in a normal browser tab; the app just watches for the resulting download
+and redirects it into your chosen output folder.
 
 ### Required Power BI permissions
 
-- Read access to the Power BI workspace containing the dataflow.
-- The workspace's **dataflow storage** must be configured to use your own
-  **Azure Data Lake Storage Gen2** account ("Bring your own storage", set
-  under Workspace settings → Dataflow storage settings). Gen1 dataflows on
-  Microsoft-managed (default) storage have no supported public API for raw
-  row data — the export will fail with a clear message if this isn't set up.
-- Read access (`Storage Blob Data Reader` or higher) on that ADLS Gen2
-  account.
+- Read/build access to the Power BI workspace and dataflow — the same
+  access you'd need to open the dataflow in a normal browser and use its
+  **"..." → Export .json** action.
+- If you don't have access, Power BI's own real "you don't have access"
+  page renders directly in the embedded view — the app doesn't need any
+  special detection logic for this.
 
 ### Configuration
 
@@ -161,48 +168,57 @@ Entered directly in the **Dataflow Export** tab (persisted per-user in
 
 - **Workspace ID** — the workspace (group) GUID.
 - **Dataflow ID** — the Gen1 dataflow GUID within that workspace.
-- **Entity name** — the dataflow entity/table name to export.
-- **Output folder** — where the CSV is written.
-
-No credentials or tokens are stored anywhere — the PowerShell script signs
-in interactively (via the `MicrosoftPowerBIMgmt`/`Az` modules, auto-installed
-to `-Scope CurrentUser` on first use) and holds the token in memory only for
-that run.
+- **Output folder** — where downloaded `.json` files are saved.
 
 ### How to run it
 
 1. Open the app, go to the **Dataflow Export** tab.
-2. Fill in Workspace ID, Dataflow ID, Entity name, Output folder.
-3. Click **Export Dataflow Data**. A browser window may open for interactive
-   sign-in the first time.
-4. Watch the log (**Show Log**) for progress; an `InfoBar` reports success/
-   failure when it finishes.
+2. Fill in Workspace ID, Dataflow ID, Output folder.
+3. Click **Open Dataflow** — the embedded browser below navigates to
+   `https://app.powerbi.com/groups/{workspaceId}/dataflows/{dataflowId}`.
+4. **First time only:** sign in inside that embedded view like a normal
+   browser. The session is saved to a persistent profile under
+   `%APPDATA%\PBIXLineageTool\webprofile\`, so subsequent runs (and app
+   restarts) skip sign-in automatically.
+5. Once the dataflow page loads, use its own **"..." → Export .json**
+   action. The app intercepts that download, sanitizes the filename, and
+   saves it into your configured output folder — an `InfoBar` confirms
+   success/failure.
 
-### Where the CSV is generated
+### Where the .json is generated
 
-`<output folder>/<sanitized entity name>.csv` — e.g. entity `FACT_EMP_DETAILS`
-writes `FACT_EMP_DETAILS.csv`. Invalid Windows filename characters in the
-entity name are replaced with `_`. If a file with that name already exists,
+`<output folder>/<sanitized dataflow name>.json` — the filename comes from
+Power BI's own suggested download name, with any characters invalid in
+Windows filenames replaced by `_`. If a file with that name already exists,
 it's moved to `<output folder>/previous_runs/<timestamp>/` first (same
 convention as the Home tab's reports), never silently overwritten in place.
 
-### Example
+### How to test this on your machine
 
-Workspace ID `a1b2...`, Dataflow ID `c3d4...`, Entity name `FACT_EMP_DETAILS`,
-Output folder `C:\Reports\dataflow` → `C:\Reports\dataflow\FACT_EMP_DETAILS.csv`.
-
-### Troubleshooting
-
-| Error stage | Meaning |
-|---|---|
-| `auth` | Sign-in failed or was cancelled. Try again. |
-| `workspace` | Workspace ID is wrong, or you don't have access to it. |
-| `storage-unsupported` | The workspace uses Microsoft-managed dataflow storage — row export isn't supported for this workspace via API; ask your admin to enable ADLS Gen2 ("Bring your own storage"), or use Power Query's Dataflows connector instead. |
-| `dataflow` | Dataflow ID is wrong, or doesn't exist in that workspace. |
-| `entity` | Entity name doesn't exist in the dataflow — the error lists the available entity names. |
-| `storage-modules` / `storage-account` / `data-retrieval` | Problem reading from the linked ADLS Gen2 account (permissions, module install, etc.). |
-| `empty` | The entity has zero rows. |
-| `filesystem` | Couldn't write the CSV (e.g. file open in Excel, disk full, permissions). |
+1. Pull this branch (`feature/dataflow-export`) and run the app as usual
+   (`python app.py`, or your normal launch method).
+2. Go to the **Dataflow Export** tab. Enter a **Workspace ID** and
+   **Dataflow ID** you actually have access to in Power BI (find these in
+   the address bar when you open the dataflow normally in a browser:
+   `.../groups/<workspaceId>/dataflows/<dataflowId>`), and pick any output
+   folder (e.g. `C:\Temp\dataflow-export-test`).
+3. Click **Open Dataflow**. The embedded view should show a Microsoft
+   sign-in page the first time — sign in normally.
+4. After signing in you should land on the dataflow's own Power BI page.
+   Click its **"..." → Export .json**; watch for the "Downloading..." and
+   then "Download complete" `InfoBar` messages, and confirm the `.json`
+   file appears in your output folder.
+5. Close and reopen the app, enter the same IDs, click **Open Dataflow**
+   again — you should land straight on the dataflow page **without** being
+   asked to sign in again (confirms the persistent session works). You can
+   also check that `%APPDATA%\PBIXLineageTool\webprofile\` now exists and
+   has grown in size.
+6. To test the "no access" path, either use a Workspace/Dataflow ID you
+   know you don't have access to, or ask a colleague to try — Power BI's
+   own real "You don't have access to this content" page should render
+   directly in the embedded view.
+7. To reset and test the sign-in flow from scratch, close the app and
+   delete `%APPDATA%\PBIXLineageTool\webprofile\`, then repeat step 3.
 
 ## Project files
 
@@ -214,8 +230,7 @@ Output folder `C:\Reports\dataflow` → `C:\Reports\dataflow\FACT_EMP_DETAILS.cs
 | `build_dataflow_table_lineage_report.py` | Writes the companion `Dataflow_Table_Lineage_Report_<pbix name>.xlsx` (Overview + Table Lineage sheets); can also be run standalone |
 | `compare_final_source_table.py` | Optional/legacy: compares the generated report against a target/reference workbook |
 | `validate_report.py` | Older validation script (superseded by `compare_final_source_table.py`) |
-| `dataflow_export.py` | Isolated feature: exports a Gen1 Dataflow entity's actual rows to CSV via `powershell/Export-DataflowEntity.ps1` (see "Dataflow Data Export" above) |
-| `fileutils.py` | Shared file helpers (archive-before-overwrite, filename sanitizing) used by both the report pipeline and the dataflow export feature |
+| `fileutils.py` | Shared file helpers (archive-before-overwrite, filename sanitizing) used by both the report pipeline and the Dataflow Export tab's download handler |
 | `requirements.txt` | Pinned dependency versions |
 | `requirements-dev.txt` | Dev-only dependencies (currently just `pytest`, for `tests/`) |
 | `setup.ps1` | One-command environment setup |

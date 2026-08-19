@@ -15,7 +15,6 @@ DEFAULTS = {
     "theme": "dark",
     "dataflow_workspace_id": "",
     "dataflow_id": "",
-    "dataflow_entity_name": "",
     "dataflow_output_dir": "",
 }
 

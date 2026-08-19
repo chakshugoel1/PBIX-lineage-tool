@@ -1,5 +1,5 @@
-"""Ensures the project root (where dataflow_export.py, fileutils.py, etc.
-live) is importable regardless of how pytest is invoked."""
+"""Ensures the project root (where fileutils.py, etc. live) is importable
+regardless of how pytest is invoked."""
 import os
 import sys
 

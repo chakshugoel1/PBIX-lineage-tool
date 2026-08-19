@@ -5,12 +5,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QHeaderView, QTableWidgetItem,
     QScrollArea,
 )
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage, QWebEngineDownloadRequest
 from qfluentwidgets import (
     FluentWindow, FluentIcon as FIF, NavigationItemPosition,
     CardWidget, PushButton, PrimaryPushButton, LineEdit, TextEdit,
@@ -20,7 +22,8 @@ from qfluentwidgets import (
 )
 
 from gui import settings as app_settings
-from gui.worker import PipelineWorker, UpdateWorker, DataflowExportWorker
+import fileutils
+from gui.worker import PipelineWorker, UpdateWorker
 from gui import updater
 from version import __version__
 
@@ -286,34 +289,31 @@ class HomeInterface(QWidget):
 
 
 class DataflowExportInterface(QWidget):
-    """Exports the actual rows of a Power BI Gen1 Dataflow entity to a local
-    CSV file (see dataflow_export.py). Kept as a separate tab/module so it
-    cannot interfere with the existing PBIX -> Dataflow -> Source pipeline."""
+    """Lets the user open a Power BI Gen1 Dataflow's own service page (by
+    Workspace ID + Dataflow ID) in an embedded, persistent-login browser
+    view, and download its exported .json (the same format already used by
+    PowerBIDataflows/*.json for lineage tracing) straight into a configured
+    output folder. Sign-in is only required once - cookies persist across
+    app restarts via a dedicated QWebEngineProfile storage folder. If the
+    user lacks access to the workspace, Power BI's own real permission page
+    simply renders in the embedded view - no separate detection needed.
+    Kept as a separate tab/module so it cannot interfere with the existing
+    PBIX -> Dataflow -> Source pipeline."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("DataflowExportInterface")
-        self.worker = None
 
         cfg = app_settings.load()
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        outer.addWidget(scroll)
+        outer.setContentsMargins(24, 20, 24, 20)
+        outer.setSpacing(10)
 
-        content = QWidget(self)
-        scroll.setWidget(content)
-        root = QVBoxLayout(content)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(14)
-
-        root.addWidget(TitleLabel("Dataflow Export", self))
-        root.addWidget(BodyLabel(
-            "Exports the actual rows of a Power BI Dataflow entity/table to a "
-            "local CSV file. Requires the workspace's Gen1 dataflow storage to "
-            "be linked to your own Azure Data Lake Storage Gen2 account.", self))
+        outer.addWidget(TitleLabel("Dataflow Export", self))
+        outer.addWidget(BodyLabel(
+            "Opens a Power BI Dataflow's own service page below. Sign in once - "
+            "the session is remembered next time. Use the page's own \"...\" -> "
+            "\"Export .json\" action to download it into the output folder.", self))
 
         inputs_card = CardWidget(self)
         inputs_layout = QVBoxLayout(inputs_card)
@@ -330,38 +330,43 @@ class DataflowExportInterface(QWidget):
         self.dataflow_edit.setPlaceholderText("Dataflow GUID")
         inputs_layout.addLayout(self._row("Dataflow ID:", self.dataflow_edit))
 
-        self.entity_edit = LineEdit(self)
-        self.entity_edit.setText(cfg["dataflow_entity_name"])
-        self.entity_edit.setPlaceholderText("Entity / table name, e.g. FACT_EMP_DETAILS")
-        inputs_layout.addLayout(self._row("Entity name:", self.entity_edit))
-
         self.output_edit = LineEdit(self)
         self.output_edit.setText(cfg["dataflow_output_dir"])
-        self.output_edit.setPlaceholderText("Folder to write the CSV to")
+        self.output_edit.setPlaceholderText("Folder downloaded .json files are saved to")
         inputs_layout.addLayout(self._row("Output folder:", self.output_edit, self._browse_output))
 
-        root.addWidget(inputs_card)
+        outer.addWidget(inputs_card)
 
-        run_row = QHBoxLayout()
-        self.export_button = PrimaryPushButton(FIF.CLOUD_DOWNLOAD, "Export Dataflow Data", self)
-        self.export_button.clicked.connect(self._on_export_clicked)
-        run_row.addWidget(self.export_button)
-        run_row.addStretch(1)
-        self.toggle_log_button = PushButton("Show Log", self)
-        self.toggle_log_button.clicked.connect(self._toggle_log)
-        run_row.addWidget(self.toggle_log_button)
-        root.addLayout(run_row)
+        open_row = QHBoxLayout()
+        self.open_button = PrimaryPushButton(FIF.CLOUD_DOWNLOAD, "Open Dataflow", self)
+        self.open_button.clicked.connect(self._on_open_clicked)
+        open_row.addWidget(self.open_button)
+        open_row.addStretch(1)
+        self.status_label = BodyLabel("", self)
+        open_row.addWidget(self.status_label)
+        outer.addLayout(open_row)
 
-        self.progress_bar = IndeterminateProgressBar(self)
-        self.progress_bar.setVisible(False)
-        root.addWidget(self.progress_bar)
+        self.browser = QWebEngineView(self)
+        self.browser.setPage(QWebEnginePage(self._profile(), self.browser))
+        self.browser.setMinimumHeight(320)
+        self.browser.loadStarted.connect(lambda: self.status_label.setText("Loading..."))
+        self.browser.loadFinished.connect(lambda ok: self.status_label.setText("" if ok else "Failed to load page."))
+        outer.addWidget(self.browser, stretch=1)
 
-        self.log_view = TextEdit(self)
-        self.log_view.setReadOnly(True)
-        self.log_view.setFixedHeight(220)
-        self.log_view.setVisible(False)
-        root.addWidget(self.log_view)
-        root.addStretch(1)
+    def _profile(self):
+        # A dedicated, named, persistent profile (separate from Qt's default
+        # one) so login cookies survive app restarts - this is what makes
+        # sign-in a one-time step instead of every run.
+        if not hasattr(DataflowExportInterface, "_shared_profile"):
+            storage_dir = os.path.join(app_settings.APP_DIR, "webprofile")
+            os.makedirs(storage_dir, exist_ok=True)
+            profile = QWebEngineProfile("dataflow-export", self)
+            profile.setPersistentStoragePath(storage_dir)
+            profile.setCachePath(os.path.join(storage_dir, "cache"))
+            profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
+            profile.downloadRequested.connect(self._on_download_requested)
+            DataflowExportInterface._shared_profile = profile
+        return DataflowExportInterface._shared_profile
 
     def _row(self, label_text, line_edit, browse_slot=None):
         row = QHBoxLayout()
@@ -378,55 +383,55 @@ class DataflowExportInterface(QWidget):
         if path:
             self.output_edit.setText(path)
 
-    def _toggle_log(self):
-        visible = not self.log_view.isVisible()
-        self.log_view.setVisible(visible)
-        self.toggle_log_button.setText("Hide Log" if visible else "Show Log")
-
-    def _on_export_clicked(self):
+    def _on_open_clicked(self):
         workspace_id = self.workspace_edit.text().strip()
         dataflow_id = self.dataflow_edit.text().strip()
-        entity_name = self.entity_edit.text().strip()
         output_dir = self.output_edit.text().strip()
 
-        if not workspace_id or not dataflow_id or not entity_name or not output_dir:
+        if not workspace_id or not dataflow_id or not output_dir:
             InfoBar.error("Missing details",
-                          "Workspace ID, Dataflow ID, Entity name and Output folder are all required.",
+                          "Workspace ID, Dataflow ID and Output folder are all required.",
                           parent=self, position=InfoBarPosition.TOP)
             return
+        os.makedirs(output_dir, exist_ok=True)
 
         app_settings.save({
             **app_settings.load(),
             "dataflow_workspace_id": workspace_id,
             "dataflow_id": dataflow_id,
-            "dataflow_entity_name": entity_name,
             "dataflow_output_dir": output_dir,
         })
 
-        self.export_button.setEnabled(False)
-        self.progress_bar.setVisible(True)
-        self.log_view.clear()
+        url = f"https://app.powerbi.com/groups/{workspace_id}/dataflows/{dataflow_id}"
+        self.browser.setUrl(QUrl(url))
 
-        self.worker = DataflowExportWorker(workspace_id, dataflow_id, entity_name, output_dir)
-        self.worker.progress.connect(self._on_progress)
-        self.worker.finished_ok.connect(self._on_finished)
-        self.worker.failed.connect(self._on_failed)
-        self.worker.start()
+    def _on_download_requested(self, download):
+        output_dir = self.output_edit.text().strip()
+        if not output_dir:
+            download.cancel()
+            InfoBar.error("Download failed", "No output folder is set.", parent=self, position=InfoBarPosition.TOP)
+            return
 
-    def _on_progress(self, line):
-        self.log_view.append(line)
+        suggested = download.suggestedFileName() or "dataflow.json"
+        stem, ext = os.path.splitext(suggested)
+        filename = fileutils.sanitize_filename(stem) + (ext or ".json")
+        final_path = os.path.join(output_dir, filename)
+        fileutils.archive_if_exists(final_path, output_dir)
 
-    def _on_finished(self, result):
-        self.export_button.setEnabled(True)
-        self.progress_bar.setVisible(False)
-        InfoBar.success("Export complete",
-                         f"{result['rows']} rows written to {result['path']}",
-                         parent=self, position=InfoBarPosition.TOP, duration=6000)
+        download.setDownloadDirectory(output_dir)
+        download.setDownloadFileName(filename)
+        download.isFinishedChanged.connect(lambda: self._on_download_finished(download, final_path))
+        download.accept()
+        InfoBar.info("Downloading", f"Saving {filename}...", parent=self, position=InfoBarPosition.TOP, duration=3000)
 
-    def _on_failed(self, message):
-        self.export_button.setEnabled(True)
-        self.progress_bar.setVisible(False)
-        InfoBar.error("Export failed", message, parent=self, position=InfoBarPosition.TOP, duration=10000)
+    def _on_download_finished(self, download, final_path):
+        completed = download.state() == QWebEngineDownloadRequest.DownloadState.DownloadCompleted
+        if completed:
+            InfoBar.success("Download complete", final_path, parent=self,
+                             position=InfoBarPosition.TOP, duration=6000)
+        else:
+            InfoBar.error("Download failed", download.interruptReasonString() or "Unknown error.",
+                          parent=self, position=InfoBarPosition.TOP, duration=8000)
 
 
 class AboutInterface(QWidget):
