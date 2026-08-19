@@ -8,8 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import requests
 from version import __version__
 
-GITHUB_OWNER = None
-GITHUB_REPO = None
+GITHUB_OWNER = "chakshugoel1"
+GITHUB_REPO = "PBIX-lineage-tool"
 
 
 def _parse_version(tag):
