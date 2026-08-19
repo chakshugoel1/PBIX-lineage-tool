@@ -9,6 +9,12 @@
 # Safe to re-run: re-running this script later is also how you update - it
 # pulls the latest code and re-installs dependencies in place.
 $ErrorActionPreference = "Stop"
+# PowerShell 7.3+ otherwise turns any stderr output from a native command
+# (git/winget/py all routinely write normal progress there) into a
+# terminating error when $ErrorActionPreference is "Stop", even if that
+# stream is redirected. This variable is simply ignored on Windows
+# PowerShell 5.1, so it's safe to set unconditionally.
+$PSNativeCommandUseErrorActionPreference = $false
 
 $RepoUrl  = "https://github.com/chakshugoel1/PBIX-lineage-tool.git"
 $AppDir   = "$env:LOCALAPPDATA\PBIXLineageTool"
@@ -29,16 +35,20 @@ function Refresh-Path {
 # 3.12 specifically and use that to create the venv.
 function Get-Python312Launcher {
     if (Test-CommandExists py) {
-        $list = (& py -0) 2>$null | Out-String
-        if ($list -match "3\.12") {
-            return @{ Exe = "py"; Args = @("-3.12") }
-        }
+        try {
+            $list = ((& py -0) 2>&1 | Out-String)
+            if ($list -match "3\.12") {
+                return @{ Exe = "py"; Args = @("-3.12") }
+            }
+        } catch {}
     }
     if (Test-CommandExists python) {
-        $ver = ((& python --version) 2>&1 | Out-String)
-        if ($ver -match "3\.12") {
-            return @{ Exe = "python"; Args = @() }
-        }
+        try {
+            $ver = ((& python --version) 2>&1 | Out-String)
+            if ($ver -match "3\.12") {
+                return @{ Exe = "python"; Args = @() }
+            }
+        } catch {}
     }
     return $null
 }
