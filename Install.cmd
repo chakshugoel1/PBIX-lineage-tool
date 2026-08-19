@@ -36,7 +36,7 @@ pause
 
 echo.
 echo Downloading installer script...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBasicParsing -Uri '%SCRIPT_URL%' -OutFile '%TEMP_SCRIPT%'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; $ok=$false; for ($i=1; $i -le 4; $i++) { try { Invoke-WebRequest -UseBasicParsing -Uri '%SCRIPT_URL%' -OutFile '%TEMP_SCRIPT%' -TimeoutSec 30; $ok=$true; break } catch { Write-Host ('Attempt ' + $i + ' of 4 failed: ' + $_.Exception.Message); if ($i -lt 4) { Write-Host 'Retrying...'; Start-Sleep -Seconds (5*$i) } } }; if (-not $ok) { exit 1 }"
 if errorlevel 1 goto DOWNLOAD_FAILED
 if not exist "%TEMP_SCRIPT%" goto DOWNLOAD_FAILED
 
@@ -64,12 +64,14 @@ exit /b %EXITCODE%
 :DOWNLOAD_FAILED
 echo.
 echo ===============================================================
-echo   Could not download the installer.
+echo   Could not download the installer ^(after 4 attempts^).
 echo ===============================================================
 echo Check your internet connection, or whether this network blocks
 echo raw.githubusercontent.com (some corporate proxies do).
+echo A "504 Gateway Timeout" is usually a temporary GitHub/network
+echo blip - just double-click this file again and try once more.
 echo.
-echo If it's blocked, ask whoever sent you this file for
+echo If it keeps failing every time, ask whoever sent you this file for
 echo bootstrap-install.ps1 directly, put it next to this file, and run:
 echo   powershell -NoProfile -ExecutionPolicy Bypass -File bootstrap-install.ps1
 echo.
