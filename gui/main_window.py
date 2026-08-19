@@ -6,8 +6,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QHeaderView, QTableWidgetItem,
+    QScrollArea,
 )
 from qfluentwidgets import (
     FluentWindow, FluentIcon as FIF, NavigationItemPosition,
@@ -54,7 +56,20 @@ class HomeInterface(QWidget):
         self.worker = None
 
         cfg = app_settings.load()
-        root = QVBoxLayout(self)
+
+        # Content lives in a scroll area so nothing is ever clipped/hidden
+        # (e.g. behind the taskbar) on smaller screens or resolutions - the
+        # window can shrink and the content becomes scrollable instead.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget(self)
+        scroll.setWidget(content)
+        root = QVBoxLayout(content)
         root.setContentsMargins(24, 20, 24, 20)
         root.setSpacing(14)
 
@@ -144,6 +159,7 @@ class HomeInterface(QWidget):
         self.flagged_table.setHorizontalHeaderLabels(["Table", "Issue Type", "Remarks"])
         self.flagged_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.flagged_table.setEditTriggers(TableWidget.NoEditTriggers)
+        self.flagged_table.setMinimumHeight(200)
         root.addWidget(self.flagged_table, stretch=1)
 
         self._last_generated_path = None
@@ -335,13 +351,29 @@ class MainWindow(FluentWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"PBIX Lineage Tool  v{__version__}")
-        self.resize(1000, 800)
+        self._size_to_screen()
 
         self.home_interface = HomeInterface(self)
         self.about_interface = AboutInterface(self)
 
         self.addSubInterface(self.home_interface, FIF.HOME, "Run")
         self.addSubInterface(self.about_interface, FIF.INFO, "About", NavigationItemPosition.BOTTOM)
+
+    def _size_to_screen(self):
+        # Size/position from the *available* screen geometry (excludes the
+        # taskbar) instead of a fixed 1000x800, so the window - and the About
+        # page / results table within it - always fits on the current
+        # display instead of being cut off on smaller resolutions.
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        available = screen.availableGeometry()
+        width = min(1000, available.width() - 40)
+        height = min(800, available.height() - 40)
+        self.setMinimumSize(480, 480)
+        self.resize(max(width, 480), max(height, 480))
+        self.move(
+            available.x() + (available.width() - self.width()) // 2,
+            available.y() + (available.height() - self.height()) // 2,
+        )
 
 
 def main():
