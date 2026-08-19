@@ -20,7 +20,7 @@ from qfluentwidgets import (
 )
 
 from gui import settings as app_settings
-from gui.worker import PipelineWorker, UpdateWorker
+from gui.worker import PipelineWorker, UpdateWorker, DataflowExportWorker
 from gui import updater
 from version import __version__
 
@@ -285,6 +285,150 @@ class HomeInterface(QWidget):
             os.startfile(output_folder)
 
 
+class DataflowExportInterface(QWidget):
+    """Exports the actual rows of a Power BI Gen1 Dataflow entity to a local
+    CSV file (see dataflow_export.py). Kept as a separate tab/module so it
+    cannot interfere with the existing PBIX -> Dataflow -> Source pipeline."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("DataflowExportInterface")
+        self.worker = None
+
+        cfg = app_settings.load()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget(self)
+        scroll.setWidget(content)
+        root = QVBoxLayout(content)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(14)
+
+        root.addWidget(TitleLabel("Dataflow Export", self))
+        root.addWidget(BodyLabel(
+            "Exports the actual rows of a Power BI Dataflow entity/table to a "
+            "local CSV file. Requires the workspace's Gen1 dataflow storage to "
+            "be linked to your own Azure Data Lake Storage Gen2 account.", self))
+
+        inputs_card = CardWidget(self)
+        inputs_layout = QVBoxLayout(inputs_card)
+        inputs_layout.setContentsMargins(16, 16, 16, 16)
+        inputs_layout.addWidget(StrongBodyLabel("1. Dataflow Details", self))
+
+        self.workspace_edit = LineEdit(self)
+        self.workspace_edit.setText(cfg["dataflow_workspace_id"])
+        self.workspace_edit.setPlaceholderText("Workspace (group) GUID")
+        inputs_layout.addLayout(self._row("Workspace ID:", self.workspace_edit))
+
+        self.dataflow_edit = LineEdit(self)
+        self.dataflow_edit.setText(cfg["dataflow_id"])
+        self.dataflow_edit.setPlaceholderText("Dataflow GUID")
+        inputs_layout.addLayout(self._row("Dataflow ID:", self.dataflow_edit))
+
+        self.entity_edit = LineEdit(self)
+        self.entity_edit.setText(cfg["dataflow_entity_name"])
+        self.entity_edit.setPlaceholderText("Entity / table name, e.g. FACT_EMP_DETAILS")
+        inputs_layout.addLayout(self._row("Entity name:", self.entity_edit))
+
+        self.output_edit = LineEdit(self)
+        self.output_edit.setText(cfg["dataflow_output_dir"])
+        self.output_edit.setPlaceholderText("Folder to write the CSV to")
+        inputs_layout.addLayout(self._row("Output folder:", self.output_edit, self._browse_output))
+
+        root.addWidget(inputs_card)
+
+        run_row = QHBoxLayout()
+        self.export_button = PrimaryPushButton(FIF.CLOUD_DOWNLOAD, "Export Dataflow Data", self)
+        self.export_button.clicked.connect(self._on_export_clicked)
+        run_row.addWidget(self.export_button)
+        run_row.addStretch(1)
+        self.toggle_log_button = PushButton("Show Log", self)
+        self.toggle_log_button.clicked.connect(self._toggle_log)
+        run_row.addWidget(self.toggle_log_button)
+        root.addLayout(run_row)
+
+        self.progress_bar = IndeterminateProgressBar(self)
+        self.progress_bar.setVisible(False)
+        root.addWidget(self.progress_bar)
+
+        self.log_view = TextEdit(self)
+        self.log_view.setReadOnly(True)
+        self.log_view.setFixedHeight(220)
+        self.log_view.setVisible(False)
+        root.addWidget(self.log_view)
+        root.addStretch(1)
+
+    def _row(self, label_text, line_edit, browse_slot=None):
+        row = QHBoxLayout()
+        row.addWidget(BodyLabel(label_text, self), stretch=0)
+        row.addWidget(line_edit, stretch=1)
+        if browse_slot:
+            btn = PushButton(FIF.FOLDER, "Browse", self)
+            btn.clicked.connect(browse_slot)
+            row.addWidget(btn, stretch=0)
+        return row
+
+    def _browse_output(self):
+        path = QFileDialog.getExistingDirectory(self, "Select output folder")
+        if path:
+            self.output_edit.setText(path)
+
+    def _toggle_log(self):
+        visible = not self.log_view.isVisible()
+        self.log_view.setVisible(visible)
+        self.toggle_log_button.setText("Hide Log" if visible else "Show Log")
+
+    def _on_export_clicked(self):
+        workspace_id = self.workspace_edit.text().strip()
+        dataflow_id = self.dataflow_edit.text().strip()
+        entity_name = self.entity_edit.text().strip()
+        output_dir = self.output_edit.text().strip()
+
+        if not workspace_id or not dataflow_id or not entity_name or not output_dir:
+            InfoBar.error("Missing details",
+                          "Workspace ID, Dataflow ID, Entity name and Output folder are all required.",
+                          parent=self, position=InfoBarPosition.TOP)
+            return
+
+        app_settings.save({
+            **app_settings.load(),
+            "dataflow_workspace_id": workspace_id,
+            "dataflow_id": dataflow_id,
+            "dataflow_entity_name": entity_name,
+            "dataflow_output_dir": output_dir,
+        })
+
+        self.export_button.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.log_view.clear()
+
+        self.worker = DataflowExportWorker(workspace_id, dataflow_id, entity_name, output_dir)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished_ok.connect(self._on_finished)
+        self.worker.failed.connect(self._on_failed)
+        self.worker.start()
+
+    def _on_progress(self, line):
+        self.log_view.append(line)
+
+    def _on_finished(self, result):
+        self.export_button.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        InfoBar.success("Export complete",
+                         f"{result['rows']} rows written to {result['path']}",
+                         parent=self, position=InfoBarPosition.TOP, duration=6000)
+
+    def _on_failed(self, message):
+        self.export_button.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        InfoBar.error("Export failed", message, parent=self, position=InfoBarPosition.TOP, duration=10000)
+
+
 class AboutInterface(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -354,9 +498,11 @@ class MainWindow(FluentWindow):
         self._size_to_screen()
 
         self.home_interface = HomeInterface(self)
+        self.dataflow_export_interface = DataflowExportInterface(self)
         self.about_interface = AboutInterface(self)
 
         self.addSubInterface(self.home_interface, FIF.HOME, "Run")
+        self.addSubInterface(self.dataflow_export_interface, FIF.CLOUD_DOWNLOAD, "Dataflow Export")
         self.addSubInterface(self.about_interface, FIF.INFO, "About", NavigationItemPosition.BOTTOM)
 
     def _size_to_screen(self):

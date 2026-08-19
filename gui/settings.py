@@ -13,6 +13,10 @@ DEFAULTS = {
     "output_folder": "",
     "archive_previous_runs": True,
     "theme": "dark",
+    "dataflow_workspace_id": "",
+    "dataflow_id": "",
+    "dataflow_entity_name": "",
+    "dataflow_output_dir": "",
 }
 
 

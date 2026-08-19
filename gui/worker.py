@@ -3,10 +3,8 @@ build_dataflow_table_lineage_report.py engine, so the UI never freezes.
 Reuses the engine's own print()-based progress output by capturing stdout
 and re-emitting each line as a Qt signal - no changes needed to the engine's
 resolution logic."""
-import datetime
 import io
 import os
-import shutil
 import sys
 
 from PySide6.QtCore import QThread, Signal
@@ -14,6 +12,8 @@ from PySide6.QtCore import QThread, Signal
 import build_lineage_report as blr
 import build_dataflow_table_lineage_report as dtlr
 import config
+import dataflow_export
+import fileutils
 from gui import updater
 
 
@@ -47,13 +47,6 @@ class PipelineWorker(QThread):
         self.output_folder = output_folder
         self.archive_previous = archive_previous
 
-    def _archive_if_exists(self, path):
-        if self.archive_previous and os.path.exists(path):
-            stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-            dest_dir = os.path.join(self.output_folder, "previous_runs", stamp)
-            os.makedirs(dest_dir, exist_ok=True)
-            shutil.move(path, os.path.join(dest_dir, os.path.basename(path)))
-
     def run(self):
         old_stdout = sys.stdout
         sys.stdout = _StreamEmitter(self.progress.emit)
@@ -64,8 +57,8 @@ class PipelineWorker(QThread):
             generated_path = os.path.join(self.output_folder, f"Generated_{stem}_Lineage.xlsx")
             dataflow_lineage_path = os.path.join(self.output_folder, f"Dataflow_Table_Lineage_Report_{stem}.xlsx")
 
-            self._archive_if_exists(generated_path)
-            self._archive_if_exists(dataflow_lineage_path)
+            fileutils.archive_if_exists(generated_path, self.output_folder, self.archive_previous)
+            fileutils.archive_if_exists(dataflow_lineage_path, self.output_folder, self.archive_previous)
 
             rows, ctx = blr.build_report(self.pbix_path, self.dataflow_folder)
             blr.write_workbook(rows, ctx, generated_path)
@@ -114,3 +107,31 @@ class UpdateWorker(QThread):
             self.finished_ok.emit(message)
         else:
             self.failed.emit(message)
+
+
+class DataflowExportWorker(QThread):
+    """Runs dataflow_export.py (which shells out to the PowerShell exporter)
+    on a background thread so the UI stays responsive; see dataflow_export.py
+    for the actual export logic."""
+    progress = Signal(str)
+    finished_ok = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(self, workspace_id, dataflow_id, entity_name, output_dir,
+                 archive_previous=True, parent=None):
+        super().__init__(parent)
+        self.workspace_id = workspace_id
+        self.dataflow_id = dataflow_id
+        self.entity_name = entity_name
+        self.output_dir = output_dir
+        self.archive_previous = archive_previous
+
+    def run(self):
+        success, result = dataflow_export.export_dataflow_entity(
+            self.workspace_id, self.dataflow_id, self.entity_name, self.output_dir,
+            archive_previous=self.archive_previous, progress_cb=self.progress.emit,
+        )
+        if success:
+            self.finished_ok.emit(result)
+        else:
+            self.failed.emit(result)
