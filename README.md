@@ -137,29 +137,32 @@ future PBIX files that don't have a reference workbook.
 
 ## Dataflow Data Export ("Dataflow Export" tab)
 
-Separate from the lineage pipeline above: lets you open a Power BI Gen1
-Dataflow's own service page in an **embedded browser view inside the app**
-and download its `.json` export (same format as `PowerBIDataflows/*.json`,
-used by the lineage pipeline) straight into a configured output folder.
-This is isolated from the lineage-report code path — it cannot affect
-`build_lineage_report.py` / `build_dataflow_table_lineage_report.py`.
+Separate from the lineage pipeline above: downloads **every dataflow in a
+Power BI workspace** to a local `.json` file each, in one go (same format
+as `PowerBIDataflows/*.json`, used by the lineage pipeline), via the
+Power BI REST API. This is isolated from the lineage-report code path — it
+cannot affect `build_lineage_report.py` / `build_dataflow_table_lineage_report.py`.
 
-There is no separate authentication code, REST API calls, or PowerShell
-involved — it's a real, embedded Power BI service page (via Qt's
-`QWebEngineView`, the same Chromium engine that already ships with
-`PySide6`, so **no new dependency or download is required**). You sign in
-and use Power BI's own "Export .json" action yourself, exactly as you would
-in a normal browser tab; the app just watches for the resulting download
-and redirects it into your chosen output folder.
+Implemented as `powershell/Export-AllDataflows.ps1` (invoked from
+`dataflow_export.py`), using Microsoft's own `MicrosoftPowerBIMgmt`
+PowerShell module:
+
+- `Connect-PowerBIServiceAccount` signs in using Microsoft's own
+  first-party client — **no Azure AD app registration needed**. Its token
+  cache persists automatically, so it silently re-authenticates on later
+  runs instead of prompting every time.
+- [`Get Dataflows`](https://learn.microsoft.com/en-us/rest/api/power-bi/dataflows/get-dataflows)
+  lists every dataflow in the workspace.
+- [`Get Dataflow`](https://learn.microsoft.com/en-us/rest/api/power-bi/dataflows/get-dataflow)
+  ("Exports the specified dataflow definition to a JSON file") is called
+  for each one, saving the real exported `.json`.
 
 ### Required Power BI permissions
 
-- Read/build access to the Power BI workspace and dataflow — the same
-  access you'd need to open the dataflow in a normal browser and use its
-  **"..." → Export .json** action.
-- If you don't have access, Power BI's own real "you don't have access"
-  page renders directly in the embedded view — the app doesn't need any
-  special detection logic for this.
+- Read access to the Power BI workspace (the same access you'd need to
+  open it normally and use "Export .json" yourself).
+- If you don't have access to the workspace, the script fails clearly with
+  a `workspace` stage error instead of guessing.
 
 ### Configuration
 
@@ -167,58 +170,55 @@ Entered directly in the **Dataflow Export** tab (persisted per-user in
 `%APPDATA%\PBIXLineageTool\settings.json`, same as the Home tab's fields):
 
 - **Workspace ID** — the workspace (group) GUID.
-- **Dataflow ID** — the Gen1 dataflow GUID within that workspace.
-- **Output folder** — where downloaded `.json` files are saved.
+- **Output folder** — where each dataflow's `.json` is saved.
 
 ### How to run it
 
 1. Open the app, go to the **Dataflow Export** tab.
-2. Fill in Workspace ID, Dataflow ID, Output folder.
-3. Click **Open Dataflow** — the embedded browser below navigates to
-   `https://app.powerbi.com/groups/{workspaceId}/dataflows/{dataflowId}`.
-4. **First time only:** sign in inside that embedded view like a normal
-   browser. The session is saved to a persistent profile under
-   `%APPDATA%\PBIXLineageTool\webprofile\`, so subsequent runs (and app
-   restarts) skip sign-in automatically.
-5. Once the dataflow page loads, use its own **"..." → Export .json**
-   action. The app intercepts that download, sanitizes the filename, and
-   saves it into your configured output folder — an `InfoBar` confirms
-   success/failure.
+2. Fill in Workspace ID, Output folder.
+3. Click **Download All Dataflows**. **First run only:** a Microsoft
+   sign-in window pops up — sign in normally. Later runs reuse the cached
+   token silently.
+4. Watch the log (**Show Log**) for per-dataflow progress; an `InfoBar`
+   reports success/failure with a file count when it finishes.
 
-### Where the .json is generated
+### Where the .json files are generated
 
-`<output folder>/<sanitized dataflow name>.json` — the filename comes from
-Power BI's own suggested download name, with any characters invalid in
-Windows filenames replaced by `_`. If a file with that name already exists,
-it's moved to `<output folder>/previous_runs/<timestamp>/` first (same
-convention as the Home tab's reports), never silently overwritten in place.
+`<output folder>/<sanitized dataflow name>.json` — one file per dataflow in
+the workspace. If a `.json` file with that name already exists, it's moved
+to `<output folder>/previous_runs/<timestamp>/` first (same convention as
+the Home tab's reports), never silently overwritten in place.
+
+### Troubleshooting
+
+| Error stage | Meaning |
+|---|---|
+| `module` | Couldn't install/import the `MicrosoftPowerBIMgmt` PowerShell module. |
+| `auth` | Sign-in failed or was cancelled. Try again. |
+| `workspace` | Workspace ID is wrong, or you don't have access to it. |
+| `list` | Couldn't list dataflows in the workspace (permissions, network). |
+| `export` | All dataflows failed to export — check the log for per-dataflow errors. |
+| `empty` | The workspace has no dataflows. |
 
 ### How to test this on your machine
 
 1. Pull this branch (`feature/dataflow-export`) and run the app as usual
    (`python app.py`, or your normal launch method).
-2. Go to the **Dataflow Export** tab. Enter a **Workspace ID** and
-   **Dataflow ID** you actually have access to in Power BI (find these in
-   the address bar when you open the dataflow normally in a browser:
-   `.../groups/<workspaceId>/dataflows/<dataflowId>`), and pick any output
-   folder (e.g. `C:\Temp\dataflow-export-test`).
-3. Click **Open Dataflow**. The embedded view should show a Microsoft
-   sign-in page the first time — sign in normally.
-4. After signing in you should land on the dataflow's own Power BI page.
-   Click its **"..." → Export .json**; watch for the "Downloading..." and
-   then "Download complete" `InfoBar` messages, and confirm the `.json`
-   file appears in your output folder.
-5. Close and reopen the app, enter the same IDs, click **Open Dataflow**
-   again — you should land straight on the dataflow page **without** being
-   asked to sign in again (confirms the persistent session works). You can
-   also check that `%APPDATA%\PBIXLineageTool\webprofile\` now exists and
-   has grown in size.
-6. To test the "no access" path, either use a Workspace/Dataflow ID you
-   know you don't have access to, or ask a colleague to try — Power BI's
-   own real "You don't have access to this content" page should render
-   directly in the embedded view.
-7. To reset and test the sign-in flow from scratch, close the app and
-   delete `%APPDATA%\PBIXLineageTool\webprofile\`, then repeat step 3.
+2. Go to the **Dataflow Export** tab. Enter a **Workspace ID** you
+   actually have access to in Power BI (find it in the address bar when you
+   open the workspace normally in a browser: `.../groups/<workspaceId>/...`),
+   and pick an output folder (e.g. `C:\Temp\dataflow-export-test`).
+3. Click **Download All Dataflows**. A Microsoft sign-in window should pop
+   up the first time — sign in normally.
+4. Watch the log for `Exporting '<name>' (...)` lines, one per dataflow,
+   then a "Download complete" `InfoBar`. Confirm one `.json` file per
+   dataflow appears in your output folder.
+5. Click **Download All Dataflows** again (same run or after restarting the
+   app) — you should **not** be prompted to sign in again (confirms the
+   cached-token session works).
+6. To test the "no access" path, use a Workspace ID you know you don't
+   have access to — you should see a clear `workspace`-stage error instead
+   of a crash.
 
 ## Project files
 
@@ -230,7 +230,8 @@ convention as the Home tab's reports), never silently overwritten in place.
 | `build_dataflow_table_lineage_report.py` | Writes the companion `Dataflow_Table_Lineage_Report_<pbix name>.xlsx` (Overview + Table Lineage sheets); can also be run standalone |
 | `compare_final_source_table.py` | Optional/legacy: compares the generated report against a target/reference workbook |
 | `validate_report.py` | Older validation script (superseded by `compare_final_source_table.py`) |
-| `fileutils.py` | Shared file helpers (archive-before-overwrite, filename sanitizing) used by both the report pipeline and the Dataflow Export tab's download handler |
+| `fileutils.py` | Shared file helpers (archive-before-overwrite, filename sanitizing) used by both the report pipeline and the dataflow export feature |
+| `dataflow_export.py` | Isolated feature: batch-exports every dataflow in a workspace to `.json` via `powershell/Export-AllDataflows.ps1` (see "Dataflow Data Export" above) |
 | `requirements.txt` | Pinned dependency versions |
 | `requirements-dev.txt` | Dev-only dependencies (currently just `pytest`, for `tests/`) |
 | `setup.ps1` | One-command environment setup |

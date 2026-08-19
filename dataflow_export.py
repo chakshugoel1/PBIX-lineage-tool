@@ -1,0 +1,62 @@
+"""Isolated feature: batch-exports every dataflow in a Power BI workspace to
+a local .json file each (the "Export .json" action, done for every dataflow
+at once), by shelling out to powershell/Export-AllDataflows.ps1. Kept
+separate from the lineage pipeline so it cannot affect it."""
+import json
+import os
+import subprocess
+
+import fileutils
+
+RESULT_PREFIX = "##RESULT##"
+_SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "powershell", "Export-AllDataflows.ps1")
+
+
+def export_all_dataflows(workspace_id, output_dir, archive_previous=True, progress_cb=None):
+    """Runs the PowerShell exporter and streams its output through
+    `progress_cb`. Returns (True, {"files": [...], "message": ...}) on
+    success or (False, error_message) on failure."""
+    if not workspace_id:
+        return False, "Workspace ID is required."
+    if not output_dir:
+        return False, "Output folder is required."
+
+    emit = progress_cb or (lambda line: None)
+
+    if archive_previous and os.path.isdir(output_dir):
+        for name in os.listdir(output_dir):
+            if name.lower().endswith(".json"):
+                fileutils.archive_if_exists(os.path.join(output_dir, name), output_dir, archive_previous)
+
+    try:
+        proc = subprocess.Popen(
+            [
+                "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", _SCRIPT_PATH,
+                "-WorkspaceId", workspace_id,
+                "-OutputDir", output_dir,
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+    except FileNotFoundError:
+        return False, "PowerShell is not available on this machine."
+
+    result = None
+    for line in proc.stdout:
+        line = line.rstrip("\r\n")
+        if not line:
+            continue
+        if line.startswith(RESULT_PREFIX):
+            try:
+                result = json.loads(line[len(RESULT_PREFIX):])
+            except json.JSONDecodeError:
+                pass
+        else:
+            emit(line)
+    proc.wait()
+
+    if result is None:
+        return False, "The export script did not report a result (it may have crashed)."
+    if not result.get("success"):
+        return False, result.get("message") or "Export failed."
+    return True, {"files": result.get("files", []), "message": result.get("message", "")}

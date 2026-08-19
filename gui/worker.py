@@ -12,6 +12,7 @@ from PySide6.QtCore import QThread, Signal
 import build_lineage_report as blr
 import build_dataflow_table_lineage_report as dtlr
 import config
+import dataflow_export
 import fileutils
 from gui import updater
 
@@ -106,3 +107,28 @@ class UpdateWorker(QThread):
             self.finished_ok.emit(message)
         else:
             self.failed.emit(message)
+
+
+class DataflowExportWorker(QThread):
+    """Runs dataflow_export.py (which shells out to
+    powershell/Export-AllDataflows.ps1) on a background thread so the UI
+    stays responsive; see dataflow_export.py for the actual export logic."""
+    progress = Signal(str)
+    finished_ok = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(self, workspace_id, output_dir, archive_previous=True, parent=None):
+        super().__init__(parent)
+        self.workspace_id = workspace_id
+        self.output_dir = output_dir
+        self.archive_previous = archive_previous
+
+    def run(self):
+        success, result = dataflow_export.export_all_dataflows(
+            self.workspace_id, self.output_dir,
+            archive_previous=self.archive_previous, progress_cb=self.progress.emit,
+        )
+        if success:
+            self.finished_ok.emit(result)
+        else:
+            self.failed.emit(result)
