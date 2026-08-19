@@ -23,6 +23,26 @@ function Refresh-Path {
     $env:Path = "$machine;$user"
 }
 
+# pbixray's pinned dependencies only ship prebuilt wheels for Python 3.12; a
+# newer "python" already on PATH (e.g. 3.14) is not enough - pip will try to
+# build packages like xpress9 from source and fail. Always look for/install
+# 3.12 specifically and use that to create the venv.
+function Get-Python312Launcher {
+    if (Test-CommandExists py) {
+        $list = (& py -0) 2>$null | Out-String
+        if ($list -match "3\.12") {
+            return @{ Exe = "py"; Args = @("-3.12") }
+        }
+    }
+    if (Test-CommandExists python) {
+        $ver = ((& python --version) 2>&1 | Out-String)
+        if ($ver -match "3\.12") {
+            return @{ Exe = "python"; Args = @() }
+        }
+    }
+    return $null
+}
+
 Write-Host "=== PBIX Lineage Tool installer ==="
 Write-Host ""
 
@@ -33,11 +53,17 @@ if (-not (Test-CommandExists git)) {
     Refresh-Path
 }
 
-# --- 2. Python ------------------------------------------------------------
-if (-not (Test-CommandExists python)) {
-    Write-Host "Python not found - installing via winget..."
+# --- 2. Python 3.12 ---------------------------------------------------------
+$py312 = Get-Python312Launcher
+if (-not $py312) {
+    Write-Host "Python 3.12 not found - installing via winget..."
     winget install --id Python.Python.3.12 -e --accept-package-agreements --accept-source-agreements
     Refresh-Path
+    $py312 = Get-Python312Launcher
+}
+if (-not $py312) {
+    Write-Error "Could not find or install Python 3.12. Install it from https://www.python.org/downloads/release/python-3120/ and re-run this script."
+    exit 1
 }
 
 # --- 3. Get (or update) the code --------------------------------------------
@@ -53,13 +79,27 @@ if (Test-Path "$AppDir\.git") {
 
 # --- 4. Virtual environment + dependencies ----------------------------------
 $venvPython = "$AppDir\.venv\Scripts\python.exe"
-if (-not (Test-Path $venvPython)) {
-    Write-Host "Creating virtual environment..."
-    python -m venv "$AppDir\.venv"
+$venvOk = $false
+if (Test-Path $venvPython) {
+    $existingVer = ((& $venvPython --version) 2>&1 | Out-String)
+    if ($existingVer -match "3\.12") {
+        $venvOk = $true
+    } else {
+        Write-Host "Existing virtual environment is not Python 3.12 - recreating..."
+        Remove-Item "$AppDir\.venv" -Recurse -Force
+    }
+}
+if (-not $venvOk) {
+    Write-Host "Creating virtual environment (Python 3.12)..."
+    & $py312.Exe @($py312.Args) -m venv "$AppDir\.venv"
 }
 Write-Host "Installing dependencies (this can take a few minutes on first run)..."
 & $venvPython -m pip install --upgrade pip --quiet
 & $venvPython -m pip install -r "$AppDir\requirements.txt"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Failed to install dependencies (pip exited with code $LASTEXITCODE). Setup did not complete - fix the error above and re-run this script."
+    exit 1
+}
 
 # --- 5. Start Menu shortcut --------------------------------------------------
 $pythonw = "$AppDir\.venv\Scripts\pythonw.exe"
