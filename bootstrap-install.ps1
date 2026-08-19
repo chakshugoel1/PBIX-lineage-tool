@@ -9,12 +9,6 @@
 # Safe to re-run: re-running this script later is also how you update - it
 # pulls the latest code and re-installs dependencies in place.
 $ErrorActionPreference = "Stop"
-# PowerShell 7.3+ otherwise turns any stderr output from a native command
-# (git/winget/py all routinely write normal progress there) into a
-# terminating error when $ErrorActionPreference is "Stop", even if that
-# stream is redirected. This variable is simply ignored on Windows
-# PowerShell 5.1, so it's safe to set unconditionally.
-$PSNativeCommandUseErrorActionPreference = $false
 
 $RepoUrl  = "https://github.com/chakshugoel1/PBIX-lineage-tool.git"
 $AppDir   = "$env:LOCALAPPDATA\PBIXLineageTool"
@@ -33,7 +27,17 @@ function Refresh-Path {
 # newer "python" already on PATH (e.g. 3.14) is not enough - pip will try to
 # build packages like xpress9 from source and fail. Always look for/install
 # 3.12 specifically and use that to create the venv.
+#
+# NOTE: on some machines/PowerShell versions, "py -0" writes its banner line
+# to stderr, and PowerShell can turn that into a terminating error under
+# $ErrorActionPreference = "Stop" (seen in the wild as a NativeCommandError),
+# even though the output is piped/redirected here. Locally relax
+# $ErrorActionPreference to "Continue" for just these detection probes (this
+# only affects this function's scope) plus try/catch, so detection can never
+# abort the whole install - a real absence of Python 3.12 is handled below by
+# returning $null, not by letting an error propagate.
 function Get-Python312Launcher {
+    $ErrorActionPreference = "Continue"
     if (Test-CommandExists py) {
         try {
             $list = ((& py -0) 2>&1 | Out-String)

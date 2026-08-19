@@ -15,13 +15,18 @@ rem  Requires: PowerShell (built into Windows) and internet access to GitHub.
 rem  If your network blocks raw.githubusercontent.com, ask for
 rem  bootstrap-install.ps1 directly instead and run it with:
 rem    powershell -NoProfile -ExecutionPolicy Bypass -File bootstrap-install.ps1
+rem
+rem  NOTE: unlike bootstrap-install.ps1 (re-fetched fresh from GitHub every
+rem  run), THIS file does not auto-update itself - if you copied/emailed it
+rem  before INSTALLER_VERSION below changed, get a fresh copy from the repo.
 rem ============================================================================
 
+set "INSTALLER_VERSION=2026-08-19.1"
 set "SCRIPT_URL=https://raw.githubusercontent.com/chakshugoel1/PBIX-lineage-tool/main/bootstrap-install.ps1"
 set "TEMP_SCRIPT=%TEMP%\pbix-lineage-bootstrap-install.ps1"
 
 echo ===============================================================
-echo   PBIX Lineage Tool - Installer
+echo   PBIX Lineage Tool - Installer ^(v%INSTALLER_VERSION%^)
 echo ===============================================================
 echo.
 echo This will:
