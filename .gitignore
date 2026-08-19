@@ -13,10 +13,10 @@ previous_runs/
 # reports built from them to this public repo.
 DTS - CashPlus-Dashboard (1).pbix
 CASHPLUS-DASHBOARD 1.xlsx
-Generated_CashPlus_Lineage.xlsx
-Dataflow_Table_Lineage_Report.xlsx
-Final_Source_Comparison.xlsx
-Final_Source_Comparison_backup.xlsx
+Generated_*_Lineage.xlsx
+Dataflow_Table_Lineage_Report_*.xlsx
+Final_Source_Comparison_*.xlsx
+Final_Source_Comparison_*_backup.xlsx
 guid_dataflow_names.json
 PowerBIDataflows/
 _validation_output.txt

@@ -13,6 +13,7 @@ from PySide6.QtCore import QThread, Signal
 
 import build_lineage_report as blr
 import build_dataflow_table_lineage_report as dtlr
+import config
 from gui import updater
 
 
@@ -59,8 +60,9 @@ class PipelineWorker(QThread):
         summary = None
         error_message = None
         try:
-            generated_path = os.path.join(self.output_folder, "Generated_CashPlus_Lineage.xlsx")
-            dataflow_lineage_path = os.path.join(self.output_folder, "Dataflow_Table_Lineage_Report.xlsx")
+            stem = config.pbix_stem(self.pbix_path)
+            generated_path = os.path.join(self.output_folder, f"Generated_{stem}_Lineage.xlsx")
+            dataflow_lineage_path = os.path.join(self.output_folder, f"Dataflow_Table_Lineage_Report_{stem}.xlsx")
 
             self._archive_if_exists(generated_path)
             self._archive_if_exists(dataflow_lineage_path)

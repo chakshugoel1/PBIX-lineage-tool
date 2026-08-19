@@ -12,6 +12,7 @@ still work without edits, as long as the input files below keep the same
 names/relative layout.
 """
 import os
+import re
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -25,13 +26,20 @@ PBIX_PATH = _p("DTS - CashPlus-Dashboard (1).pbix")
 DATAFLOW_FOLDER = _p("PowerBIDataflows")
 TARGET_XLSX = _p("CASHPLUS-DASHBOARD 1.xlsx")
 
+def pbix_stem(pbix_path):
+    """Filesystem-safe stem derived from a PBIX file's basename, for naming output reports."""
+    return re.sub(r"[^A-Za-z0-9]+", "_", os.path.splitext(os.path.basename(pbix_path))[0]).strip("_")
+
+
+_PBIX_STEM = pbix_stem(PBIX_PATH)
+
 # --- Outputs ----------------------------------------------------------------
-GENERATED_XLSX = _p("Generated_CashPlus_Lineage.xlsx")
-COMPARISON_XLSX = _p("Final_Source_Comparison.xlsx")
+GENERATED_XLSX = _p(f"Generated_{_PBIX_STEM}_Lineage.xlsx")
+COMPARISON_XLSX = _p(f"Final_Source_Comparison_{_PBIX_STEM}.xlsx")
 
 # Companion report: PBIX -> Dataflow -> Physical Source lineage in the
 # "Table Lineage" / "Overview" column layout (see
 # build_dataflow_table_lineage_report.py). This is the authoritative,
 # self-contained report for future PBIX files where no target/reference
 # workbook exists to validate against.
-DATAFLOW_LINEAGE_XLSX = _p("Dataflow_Table_Lineage_Report.xlsx")
+DATAFLOW_LINEAGE_XLSX = _p(f"Dataflow_Table_Lineage_Report_{_PBIX_STEM}.xlsx")
