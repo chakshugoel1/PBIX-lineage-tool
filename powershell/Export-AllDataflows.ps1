@@ -28,8 +28,15 @@ function Get-SafeFileName {
 
 try {
     if (-not (Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt)) {
+        # First-run-only: Install-Module -Force alone does not suppress the
+        # separate "NuGet provider is required" prompt, which would otherwise
+        # hang this non-interactive subprocess waiting for input.
+        if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
+            Write-Output "Installing NuGet package provider (one-time, current user only)..."
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
+        }
         Write-Output "Installing MicrosoftPowerBIMgmt module (one-time, current user only)..."
-        Install-Module -Name MicrosoftPowerBIMgmt -Scope CurrentUser -Force -AllowClobber
+        Install-Module -Name MicrosoftPowerBIMgmt -Scope CurrentUser -Force -AllowClobber -Confirm:$false
     }
     Import-Module MicrosoftPowerBIMgmt -ErrorAction Stop
 }
