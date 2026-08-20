@@ -27,6 +27,7 @@ from version import __version__
 STATUS_CARD_COLORS = {
     "Resolved": "#C6E0B4",
     "Needs Manual Override": "#FFF200",
+    "Unresolved": "#D9D9D9",
     "Calculated": "#D9D9D9",
 }
 
@@ -131,9 +132,11 @@ class HomeInterface(QWidget):
         cards_row = QHBoxLayout()
         self.resolved_card = StatusCard("Resolved", STATUS_CARD_COLORS["Resolved"], self)
         self.override_card = StatusCard("Needs Manual Override", STATUS_CARD_COLORS["Needs Manual Override"], self)
+        self.unresolved_card = StatusCard("Unresolved", STATUS_CARD_COLORS["Unresolved"], self)
         self.calculated_card = StatusCard("Calculated", STATUS_CARD_COLORS["Calculated"], self)
         cards_row.addWidget(self.resolved_card)
         cards_row.addWidget(self.override_card)
+        cards_row.addWidget(self.unresolved_card)
         cards_row.addWidget(self.calculated_card)
         root.addLayout(cards_row)
 
@@ -258,6 +261,7 @@ class HomeInterface(QWidget):
 
         self.resolved_card.set_value(summary["found"])
         self.override_card.set_value(summary["needs_override"])
+        self.unresolved_card.set_value(summary["hard_unresolved"])
         self.calculated_card.set_value(summary["no_query"])
 
         self.flagged_table.setRowCount(len(summary["flagged_rows"]))
@@ -267,7 +271,8 @@ class HomeInterface(QWidget):
             self.flagged_table.setItem(r, 2, QTableWidgetItem(row["remarks"]))
 
         InfoBar.success("Run complete",
-                         f"{summary['found']} resolved, {summary['needs_override']} need manual override.",
+                         f"{summary['found']} resolved, {summary['needs_override']} need manual override, "
+                         f"{summary['hard_unresolved']} unresolved.",
                          parent=self, position=InfoBarPosition.TOP, duration=4000)
 
     def _on_failed(self, message):
