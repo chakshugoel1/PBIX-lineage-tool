@@ -434,15 +434,86 @@ def split_mashup_document(doc):
     return queries
 
 
+_DUP_SUFFIX_RE = re.compile(r"^(.*?)\s*\((\d+)\)$")
+
+
+def _dataflow_base_name(stem):
+    """Strip a trailing ' (N)'/'(N)' suffix (Power BI's own auto-suffix for a
+    duplicate-named published dataflow) to get the group's canonical name."""
+    m = _DUP_SUFFIX_RE.match(stem)
+    return m.group(1) if m else stem
+
+
+def _dataflow_content_signature(raw):
+    """Fingerprint used to tell a true duplicate export from a genuinely
+    different dataflow - excludes 'modifiedTime' and the dataflow's own
+    'name' field, since both always differ between two exports of the same
+    dataflow (fresh timestamp, and Power BI auto-suffixes 'name' with '(N)'
+    to avoid a display-name collision) even with zero real content change."""
+    entities = sorted(raw.get("entities", []), key=lambda e: e.get("name", ""))
+    return json.dumps(entities, sort_keys=True), raw.get("pbi:mashup", {}).get("document", "")
+
+
+def _build_dataflow_entry(fp, raw):
+    entities = {e["name"]: e for e in raw.get("entities", [])}
+    doc = raw.get("pbi:mashup", {}).get("document", "")
+    queries = split_mashup_document(doc)
+    return {"entities": entities, "queries": queries, "path": fp, "raw": raw}
+
+
+def _resolve_duplicate_group(base_name, files):
+    """Load every file sharing one base name and collapse them to a single
+    entry: the latest by modifiedTime. If the group's content genuinely
+    differs (not just a harmless re-publish), attach a duplicate_notice so
+    the report can flag it for manual confirmation instead of silently
+    treating one of them as an unrelated 'ambiguous entity match'."""
+    parsed = []
+    for fp in files:
+        try:
+            raw = json.load(open(fp, encoding="utf-8"))
+        except Exception as e:
+            parsed.append({"path": fp, "raw": None, "error": str(e)})
+            continue
+        parsed.append({"path": fp, "raw": raw, "modifiedTime": raw.get("modifiedTime", "")})
+
+    ok = [p for p in parsed if p["raw"] is not None]
+    if not ok:
+        bad = parsed[0]
+        return _build_dataflow_entry(bad["path"], {}) | {"error": bad["error"]}
+
+    ok.sort(key=lambda p: p["modifiedTime"])
+    latest = ok[-1]
+    entry = _build_dataflow_entry(latest["path"], latest["raw"])
+
+    signatures = {_dataflow_content_signature(p["raw"]) for p in ok}
+    if len(signatures) > 1:
+        entry["duplicate_notice"] = {
+            "base_name": base_name,
+            "files": [os.path.basename(p["path"]) for p in ok],
+            "chosen_file": os.path.basename(latest["path"]),
+            "chosen_modified": latest["modifiedTime"],
+        }
+    else:
+        print(f"NOTE: '{base_name}' has {len(ok)} duplicate exports with identical content; "
+              f"using the latest ({os.path.basename(latest['path'])}).")
+    return entry
+
+
 def load_dataflows(folder):
     """Load every *.json under folder, searching all nested subfolders.
-    Returns dict: stem -> {"entities": {name: entity_dict}, "queries": {name: expr}, "path": path}
+    Returns dict: base_name -> {"entities": {...}, "queries": {...}, "path": path,
+    optionally "duplicate_notice": {...}}
+
+    Files sharing a base name (e.g. 'X.json' and 'X (1).json' - Power BI's own
+    auto-suffix for a duplicate-named published dataflow) are collapsed into a
+    single entry: the latest by modifiedTime. This is resolved here, before
+    entity_index is built, so a duplicate export never shows up as a separate
+    "ambiguous entity match" candidate for unrelated cross-dataflow lookups.
 
     Raises RuntimeError if no .json files are found anywhere under folder,
     instead of silently returning an empty dict (which used to make every
     table look unresolved with no indication of why).
     """
-    dataflows = {}
     files = glob.glob(os.path.join(folder, "**", "*.json"), recursive=True)
     if not files:
         raise RuntimeError(
@@ -450,22 +521,27 @@ def load_dataflows(folder):
             "Check that the Dataflow folder path is correct and contains the exported "
             "dataflow JSON files."
         )
+
+    groups = {}
     for fp in files:
         stem = os.path.splitext(os.path.basename(fp))[0]
-        if stem in dataflows:
-            print(f"WARNING: duplicate dataflow file name '{stem}' found at '{fp}'; "
-                  f"keeping the first one loaded ('{dataflows[stem]['path']}').")
-            continue
-        try:
-            d = json.load(open(fp, encoding="utf-8"))
-        except Exception as e:
-            dataflows[stem] = {"entities": {}, "queries": {}, "path": fp, "error": str(e)}
-            continue
-        entities = {e["name"]: e for e in d.get("entities", [])}
-        doc = d.get("pbi:mashup", {}).get("document", "")
-        queries = split_mashup_document(doc)
-        dataflows[stem] = {"entities": entities, "queries": queries, "path": fp, "raw": d}
+        base_name = _dataflow_base_name(stem)
+        groups.setdefault(base_name, []).append(fp)
+
+    dataflows = {}
+    for base_name, group_files in groups.items():
+        if len(group_files) == 1:
+            fp = group_files[0]
+            try:
+                raw = json.load(open(fp, encoding="utf-8"))
+            except Exception as e:
+                dataflows[base_name] = {"entities": {}, "queries": {}, "path": fp, "error": str(e)}
+                continue
+            dataflows[base_name] = _build_dataflow_entry(fp, raw)
+        else:
+            dataflows[base_name] = _resolve_duplicate_group(base_name, group_files)
     return dataflows
+
 
 
 _entity_index_cache = None
