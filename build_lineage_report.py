@@ -134,9 +134,35 @@ def _collect_dataflow_stems(lvl1, phys, dataflows):
     return stems
 
 
+def _apply_duplicate_notices(row, ctx):
+    """If a row's lineage touched a dataflow whose duplicate exports had
+    genuinely differing content (collapsed to the latest in load_dataflows),
+    flag it for manual confirmation instead of leaving it silently resolved."""
+    notices = [ctx["dataflows"][s]["duplicate_notice"] for s in row.get("dataflow_stems", set())
+               if ctx["dataflows"].get(s, {}).get("duplicate_notice")]
+    if not notices:
+        return
+    parts = [
+        f"[NEEDS MANUAL OVERRIDE - DUPLICATE DATAFLOW DETECTED] Multiple exports of "
+        f"'{n['base_name']}' were found with differing content ({', '.join(n['files'])}) - "
+        f"automatically selected the latest ('{n['chosen_file']}', modified {n['chosen_modified']}). "
+        f"Please verify manually."
+        for n in notices
+    ]
+    row["needs_override"] = True
+    row["override_tag"] = "; ".join(filter(None, [row.get("override_tag"), "DUPLICATE DATAFLOW DETECTED"]))
+    row["remarks"] = "\n".join(filter(None, [row.get("remarks")] + parts))
+
+
 def resolve_table_row(table, ctx):
     """Compute the full lineage info for one PBIX table. Returns a dict of
     fields ready for the Excel row, plus a 'status' of 'found'/'unresolved'/'union'/'no_query'."""
+    row = _resolve_table_row_inner(table, ctx)
+    _apply_duplicate_notices(row, ctx)
+    return row
+
+
+def _resolve_table_row_inner(table, ctx):
     entries = ctx["entries"]
     expr = entries.get(table)
 
