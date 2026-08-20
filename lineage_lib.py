@@ -435,12 +435,27 @@ def split_mashup_document(doc):
 
 
 def load_dataflows(folder):
-    """Load every *.json in folder. Returns dict:
-    stem -> {"entities": {name: entity_dict}, "queries": {name: expr}, "path": path}
+    """Load every *.json under folder, searching all nested subfolders.
+    Returns dict: stem -> {"entities": {name: entity_dict}, "queries": {name: expr}, "path": path}
+
+    Raises RuntimeError if no .json files are found anywhere under folder,
+    instead of silently returning an empty dict (which used to make every
+    table look unresolved with no indication of why).
     """
     dataflows = {}
-    for fp in glob.glob(os.path.join(folder, "*.json")):
+    files = glob.glob(os.path.join(folder, "**", "*.json"), recursive=True)
+    if not files:
+        raise RuntimeError(
+            f"No dataflow .json files found in '{folder}' (including subfolders). "
+            "Check that the Dataflow folder path is correct and contains the exported "
+            "dataflow JSON files."
+        )
+    for fp in files:
         stem = os.path.splitext(os.path.basename(fp))[0]
+        if stem in dataflows:
+            print(f"WARNING: duplicate dataflow file name '{stem}' found at '{fp}'; "
+                  f"keeping the first one loaded ('{dataflows[stem]['path']}').")
+            continue
         try:
             d = json.load(open(fp, encoding="utf-8"))
         except Exception as e:
