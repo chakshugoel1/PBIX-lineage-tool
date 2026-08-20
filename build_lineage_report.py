@@ -159,6 +159,9 @@ def resolve_table_row(table, ctx):
     fields ready for the Excel row, plus a 'status' of 'found'/'unresolved'/'union'/'no_query'."""
     row = _resolve_table_row_inner(table, ctx)
     _apply_duplicate_notices(row, ctx)
+    # 'unresolved'/'union' rows have no Final Source at all - a harder problem
+    # than a 'found' row that's merely flagged for a quick confirmation.
+    row["hard_unresolved"] = row["status"] in ("unresolved", "union")
     return row
 
 
@@ -348,11 +351,11 @@ def write_workbook(rows, ctx, output_path=None):
 
     ws.cell(row=2, column=1, value="Found Source")
     ws.cell(row=2, column=1).fill = GREEN_FILL
-    ws.cell(row=3, column=1, value="No Access")
+    ws.cell(row=3, column=1, value="Unresolved / No Source Found")
     ws.cell(row=3, column=1).fill = GREY_FILL
     ws.cell(row=4, column=1, value="Tables not used")
     ws.cell(row=4, column=1).fill = RED_FILL
-    ws.cell(row=5, column=1, value="Needs Manual Override")
+    ws.cell(row=5, column=1, value="Needs Manual Override (source found, please confirm)")
     ws.cell(row=5, column=1).fill = YELLOW_FILL
     ws.cell(row=2, column=2, value="Report: CashPlus - Dashboard\nDownloaded: WKS DTF FINANCE")
 
@@ -376,6 +379,8 @@ def write_workbook(rows, ctx, output_path=None):
         if not info["is_used"]:
             fill = RED_FILL
             unused_tables.append(info["table"])
+        elif info.get("hard_unresolved"):
+            fill = GREY_FILL
         elif info.get("needs_override"):
             fill = YELLOW_FILL
         elif info["status"] == "found":
@@ -462,9 +467,12 @@ def write_workbook(rows, ctx, output_path=None):
     print(f"  dataflow files provided={len(all_stems)}, reached by PBIX lineage={len(all_used_stems)}, "
           f"never touched={len(unused_stems)}")
 
-    needs_override = sum(1 for i in rows if i.get("needs_override"))
-    print(f"  needs_manual_override={needs_override}")
-    tag_counts = Counter(i["override_tag"] for i in rows if i.get("needs_override"))
+    needs_override = sum(1 for i in rows if i.get("needs_override") and not i.get("hard_unresolved"))
+    hard_unresolved = sum(1 for i in rows if i.get("hard_unresolved"))
+    print(f"  needs_manual_override (soft - source found, please confirm)={needs_override} "
+          f"({needs_override / len(rows):.1%} of total)")
+    print(f"  hard_unresolved (no source found at all)={hard_unresolved} ({hard_unresolved / len(rows):.1%} of total)")
+    tag_counts = Counter(i["override_tag"] for i in rows if i.get("needs_override") and not i.get("hard_unresolved"))
     for tag, cnt in sorted(tag_counts.items(), key=lambda x: -x[1]):
         print(f"    - {tag}: {cnt}")
 

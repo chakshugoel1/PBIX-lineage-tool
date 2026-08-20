@@ -72,7 +72,10 @@ class PipelineWorker(QThread):
                 "unresolved": sum(1 for r in rows if r["status"] == "unresolved"),
                 "union": sum(1 for r in rows if r["status"] == "union"),
                 "no_query": sum(1 for r in rows if r["status"] == "no_query"),
-                "needs_override": sum(1 for r in rows if r.get("needs_override")),
+                # "soft" override: a source was found, just needs a quick confirm.
+                "needs_override": sum(1 for r in rows if r.get("needs_override") and not r.get("hard_unresolved")),
+                # "hard" unresolved: no source could be determined at all (unresolved/union).
+                "hard_unresolved": sum(1 for r in rows if r.get("hard_unresolved")),
                 "flagged_rows": [
                     {"table": r["table"], "issue": r.get("override_tag") or "", "remarks": r.get("remarks") or ""}
                     for r in rows if r.get("needs_override")
