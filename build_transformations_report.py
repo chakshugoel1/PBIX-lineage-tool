@@ -29,11 +29,14 @@ YELLOW_FILL = PatternFill(start_color="FFFFFF00", end_color="FFFFFF00", fill_typ
 WRAP = Alignment(wrap_text=True, vertical="top")
 
 TRANSFORMATIONS_HEADERS = [
-    "Color Code", "Entity Name on Talend", "DTF 2 Transformation", "DTF 2 AI command",
+    "Color Code", "Entity Name in Source", "DTF 2 Transformation", "DTF 2 AI command",
     "DTF 1 Transformation", "DTF 1 AI command", "Reference Table Transformation",
     "Reference Table AI command", "Entity Transformation", "Entity AI command",
     "Entity Name in Report",
 ]
+
+AI_DISCLAIMER = ("NOTE: This AI-generated transformation(AI command) is provided for reference "
+                 "only; please refer to the original M Query transformation as the source of truth.")
 
 
 # --------------------------------------------------------------------------
@@ -210,14 +213,16 @@ def explain_m_steps(m_text):
 # --------------------------------------------------------------------------
 def _status_bucket(row):
     if not row.get("is_used", True):
-        return "Tables not used in PBIX", RED_FILL
-    if row.get("hard_unresolved"):
-        return "Unresolved / No Source Found", GREY_FILL
-    if row.get("needs_override"):
-        return "Needs Manual Review", YELLOW_FILL
-    if row.get("status") == "found":
-        return "Found Source Automatically", GREEN_FILL
-    return "No M/Power Query Source", None
+        label, fill = "Tables not used in PBIX", RED_FILL
+    elif row.get("hard_unresolved"):
+        label, fill = "Unresolved / No Source Found", GREY_FILL
+    elif row.get("needs_override"):
+        label, fill = "Needs Manual Review", YELLOW_FILL
+    elif row.get("status") == "found":
+        label, fill = "Found Source Automatically", GREEN_FILL
+    else:
+        label, fill = "No M/Power Query Source", None
+    return f"{label}\n\n{AI_DISCLAIMER}", fill
 
 
 def _dataflow_query_text(ctx, stem, entity):
@@ -234,6 +239,64 @@ def _with_dataflow_header(workspace, dataflow, entity, code):
     return header + code
 
 
+# --------------------------------------------------------------------------
+# Placeholder notes for the 4 raw-code columns - every blank cell must be
+# self-explanatory (which of a small set of known, verified reasons applies),
+# so a blank is never ambiguous between "deliberate" and "something's wrong".
+# --------------------------------------------------------------------------
+NOTE_FONT = Font(italic=True, color="FF808080")
+
+NO_LINEAGE_NOTE = "[No dataflow source was resolved for this table - see Color Code / Remarks.]"
+
+
+def _missing_dataflow_note(stem):
+    return f"[Dataflow export file '{stem}' was not found in the provided folder.]"
+
+
+def _no_query_note(ctx, stem, entity):
+    """Explain why a dataflow's mashup document has no query text for this
+    entity. Verified against real data: this is 100% correlated with the
+    entity being a ReferenceEntity (a linked entity with no computed step of
+    its own) - never a name-matching miss on a real (Local/Calculated) entity."""
+    df = ctx["dataflows"].get(stem) or {}
+    meta = df.get("entities", {}).get(entity)
+    if meta is not None and meta.get("$type") == "ReferenceEntity":
+        return (f"[Entity '{entity}' is a linked/reference entity in '{stem}' - it has no M code "
+                "of its own; the actual transformation lives in the next dataflow hop shown below.]")
+    return (f"[No matching M query found for entity '{entity}' in dataflow '{stem}' - "
+            "please verify manually.]")
+
+
+def _entity_name_in_source(phys, entity):
+    """Structured 'where does this data physically live' breakdown, replacing
+    the old single-value Talend-name lookup - format varies by connector
+    type since each has a different notion of 'location'."""
+    if not phys:
+        return None
+    connector = phys.get("connector")
+    if connector == "Oracle Database":
+        lines = []
+        if phys.get("datamart"):
+            lines.append(f"Datamart = {phys['datamart']}")
+        if phys.get("schema"):
+            lines.append(f'Schema = "{phys["schema"]}"')
+        if phys.get("table") or entity:
+            lines.append(f'Item = "{phys.get("table") or entity}"')
+        return "\n".join(lines) if lines else None
+    if connector in ("SharePoint Excel/CSV", "Excel Workbook", "Web Contents"):
+        lines = []
+        if phys.get("site"):
+            lines.append(f"Site = {phys['site']}")
+        if phys.get("folder"):
+            lines.append(f"Folder = {phys['folder']}")
+        if phys.get("file"):
+            lines.append(f"File = {phys['file']}")
+        return "\n".join(lines) if lines else None
+    if phys.get("file"):
+        return f"File = {phys['file']}"
+    return entity
+
+
 def _build_transformation_row(row, ctx):
     table = row["table"]
     entries = ctx["entries"]
@@ -241,42 +304,94 @@ def _build_transformation_row(row, ctx):
     phys = row.get("phys")
     entity = row.get("entity")
 
+    notes = set()
+
     entity_code = entries.get(table)
+    if entity_code is None:
+        entity_code = ("[No Power Query source for this table - likely a calculated table, "
+                        "measures-only table, or parameter.]")
+        notes.add("entity")
 
     reference_code = None
-    if lvl1 and lvl1.get("path"):
-        reference_code = entries.get(lvl1["path"][-1])
+    reference_ai = None
+    if lvl1 is None:
+        reference_code = NO_LINEAGE_NOTE
+        notes.add("reference")
+    elif lvl1.get("path"):
+        # Show every intermediate PBIX-level hop (not just the deepest one),
+        # numbered in path order: "Reference Table 1" = closest to the table
+        # itself, up to "Reference Table N" = the query that actually calls
+        # PowerPlatform.Dataflows.
+        code_blocks, ai_blocks = [], []
+        for i, hop in enumerate(lvl1["path"], start=1):
+            hop_code = entries.get(hop)
+            if hop_code is None:
+                hop_code = f"[No M code found for intermediate query '{hop}'.]"
+            code_blocks.append(f"Reference Table {i}:\n{hop_code}")
+            hop_ai = explain_m_steps(hop_code)
+            if hop_ai:
+                ai_blocks.append(f"Reference Table {i}:\n{hop_ai}")
+        reference_code = "\n".join(code_blocks)
+        reference_ai = "\n".join(ai_blocks) if ai_blocks else None
+    else:
+        reference_code = "[No separate reference-table hop - this table's query binds directly to the dataflow.]"
+        notes.add("reference")
 
     dtf1_code = None
     dtf2_code = None
-    talend_name = None
-    if lvl1 and entity:
+
+    if lvl1 is None or entity is None:
+        dtf1_code = NO_LINEAGE_NOTE
+        dtf2_code = NO_LINEAGE_NOTE
+        notes.update(("dtf1", "dtf2"))
+    else:
         dtf1_stem = lvl1["dataflow"]
-        dtf1_raw = _dataflow_query_text(ctx, dtf1_stem, entity)
-        dtf1_code = _with_dataflow_header(lvl1["workspace"], dtf1_stem, entity, dtf1_raw)
+        if dtf1_stem not in ctx["dataflows"]:
+            dtf1_code = _missing_dataflow_note(dtf1_stem)
+            notes.add("dtf1")
+        else:
+            dtf1_raw = _dataflow_query_text(ctx, dtf1_stem, entity)
+            if dtf1_raw is None:
+                dtf1_code = _no_query_note(ctx, dtf1_stem, entity)
+                notes.add("dtf1")
+            else:
+                dtf1_code = _with_dataflow_header(lvl1["workspace"], dtf1_stem, entity, dtf1_raw)
 
         resolved_stem = (phys or {}).get("resolved_stem")
-        if resolved_stem and resolved_stem != dtf1_stem:
-            dtf2_raw = _dataflow_query_text(ctx, resolved_stem, entity)
-            dtf2_code = _with_dataflow_header(lvl1["workspace"], resolved_stem, entity, dtf2_raw)
-
-        if phys and phys.get("connector") == "Oracle Database" and phys.get("table"):
-            talend_name = phys["table"]
-        elif phys and phys.get("file"):
-            talend_name = phys["file"]
+        if not resolved_stem:
+            reason = (phys or {}).get("reason")
+            dtf2_code = ("[No physical source could be resolved beyond DTF 1"
+                          f"{f' - {reason}' if reason else ''}. See Remarks.]")
+            notes.add("dtf2")
+        elif resolved_stem == dtf1_stem:
+            dtf2_code = ("[Single dataflow hop only - DTF 1 already contains the physical source; "
+                         "no deeper hop exists.]")
+            notes.add("dtf2")
+        elif resolved_stem not in ctx["dataflows"]:
+            dtf2_code = _missing_dataflow_note(resolved_stem)
+            notes.add("dtf2")
         else:
-            talend_name = entity
+            dtf2_raw = _dataflow_query_text(ctx, resolved_stem, entity)
+            if dtf2_raw is None:
+                dtf2_code = _no_query_note(ctx, resolved_stem, entity)
+                notes.add("dtf2")
+            else:
+                dtf2_code = _with_dataflow_header(lvl1["workspace"], resolved_stem, entity, dtf2_raw)
+
+    entity_name_in_source = _entity_name_in_source(phys, entity)
 
     label, fill = _status_bucket(row)
 
     return {
         "color_code": label, "fill": fill,
-        "talend_name": talend_name,
-        "dtf2_code": dtf2_code, "dtf2_ai": explain_m_steps(dtf2_code),
-        "dtf1_code": dtf1_code, "dtf1_ai": explain_m_steps(dtf1_code),
-        "reference_code": reference_code, "reference_ai": explain_m_steps(reference_code),
-        "entity_code": entity_code, "entity_ai": explain_m_steps(entity_code),
+        "talend_name": entity_name_in_source,
+        "dtf2_code": dtf2_code, "dtf2_ai": None if "dtf2" in notes else explain_m_steps(dtf2_code),
+        "dtf1_code": dtf1_code, "dtf1_ai": None if "dtf1" in notes else explain_m_steps(dtf1_code),
+        "reference_code": reference_code,
+        "reference_ai": None if "reference" in notes else reference_ai,
+        "entity_code": entity_code, "entity_ai": None if "entity" in notes else explain_m_steps(entity_code),
         "entity_name_report": table,
+        "notes": notes,
     }
 
 
@@ -310,6 +425,10 @@ def add_transformations_sheet(wb, rows, ctx):
         ws.cell(row=r, column=9, value=t["entity_code"])
         ws.cell(row=r, column=10, value=t["entity_ai"])
         ws.cell(row=r, column=11, value=t["entity_name_report"])
+
+        for col, note_key in ((3, "dtf2"), (5, "dtf1"), (7, "reference"), (9, "entity")):
+            if note_key in t["notes"]:
+                ws.cell(row=r, column=col).font = NOTE_FONT
         r += 1
 
     widths = [16, 22, 45, 45, 45, 45, 45, 45, 45, 45, 22]
