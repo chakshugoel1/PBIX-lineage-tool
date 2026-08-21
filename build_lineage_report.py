@@ -39,6 +39,11 @@ HEADERS = ["Color Codes", "Report Name", "Entities Used across report", "Source 
            "Source - Level 2", "Final Source", "Folder PATH", "File Name", "Remarks"]
 
 
+def _safe_column_set(df, col):
+    # pbixray returns a columnless DataFrame (not just 0 rows) when a table (e.g. measures) is absent from the PBIX.
+    return set(df[col]) if col in df.columns else set()
+
+
 def load_everything(pbix_path=None, dataflow_folder=None):
     pbix_path = pbix_path or PBIX_PATH
     dataflow_folder = dataflow_folder or DATAFLOW_FOLDER
@@ -59,8 +64,8 @@ def load_everything(pbix_path=None, dataflow_folder=None):
     entity_index = ll.build_entity_index(dataflows)
     name_index = ll.build_name_index(dataflows)
 
-    used_tables = set(model.relationships["FromTableName"]) | set(model.relationships["ToTableName"])
-    used_tables |= set(model.dax_measures["TableName"])
+    used_tables = _safe_column_set(model.relationships, "FromTableName") | _safe_column_set(model.relationships, "ToTableName")
+    used_tables |= _safe_column_set(model.dax_measures, "TableName")
 
     return {
         "model": model,
