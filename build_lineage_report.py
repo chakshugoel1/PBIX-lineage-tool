@@ -22,6 +22,7 @@ import openpyxl
 from openpyxl.styles import PatternFill, Alignment, Font
 from collections import Counter
 import config
+import build_transformations_report as btr
 
 PBIX_PATH = config.PBIX_PATH
 DATAFLOW_FOLDER = config.DATAFLOW_FOLDER
@@ -454,6 +455,8 @@ def write_workbook(rows, ctx, output_path=None):
         r4 += 1
     ws4.column_dimensions["A"].width = 60
     ws4.column_dimensions["B"].width = 22
+
+    btr.add_transformations_sheet(wb, rows, ctx)
 
     wb.save(output_path)
     print(f"Saved: {output_path}")
