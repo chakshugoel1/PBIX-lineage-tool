@@ -1,6 +1,7 @@
 """Main application window - Fluent Design (Windows 11 style) UI wrapping
 the existing PBIX -> Dataflow -> Physical Source lineage engine."""
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -9,14 +10,14 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QHeaderView, QTableWidgetItem,
-    QScrollArea,
+    QScrollArea, QApplication,
 )
 from qfluentwidgets import (
     FluentWindow, FluentIcon as FIF, NavigationItemPosition,
     CardWidget, PushButton, PrimaryPushButton, LineEdit, TextEdit,
     IndeterminateProgressBar, TableWidget, InfoBar, InfoBarPosition,
     TitleLabel, SubtitleLabel, BodyLabel, StrongBodyLabel, CheckBox,
-    SwitchButton, setTheme, Theme,
+    SwitchButton, setTheme, Theme, MessageBox,
 )
 
 from gui import settings as app_settings
@@ -447,6 +448,15 @@ class AboutInterface(QWidget):
         layout.addWidget(self.update_button)
         self.update_status = BodyLabel("", self)
         layout.addWidget(self.update_status)
+
+        layout.addWidget(BodyLabel(
+            "If the app seems stuck, or keeps showing an error that should already be "
+            "fixed, use Hard Reset: it stops any run in progress, kills any background "
+            "process it started, and restarts the app fresh.", self))
+        self.reset_button = PushButton(FIF.POWER_BUTTON, "Hard Reset App", self)
+        self.reset_button.clicked.connect(self._on_hard_reset)
+        layout.addWidget(self.reset_button)
+
         layout.addStretch(1)
         self.update_worker = None
 
@@ -482,6 +492,9 @@ class AboutInterface(QWidget):
         self.update_status.setText(message)
         self.update_button.setEnabled(True)
 
+    def _on_hard_reset(self):
+        self.window().hard_reset()
+
 
 class MainWindow(FluentWindow):
     def __init__(self):
@@ -513,10 +526,38 @@ class MainWindow(FluentWindow):
             available.y() + (available.height() - self.height()) // 2,
         )
 
+    def hard_reset(self):
+        """Stops any in-progress run/export, kills any background process it
+        started, and relaunches the app as a brand-new process - so stale
+        in-memory state (or code fixes the running process hasn't picked up
+        yet) can never be the cause of a repeat error."""
+        box = MessageBox(
+            "Hard Reset",
+            "This stops any pipeline run or dataflow export in progress, kills any "
+            "background process it started, and restarts the app fresh. Continue?",
+            self,
+        )
+        if not box.exec():
+            return
+
+        for worker in (self.home_interface.worker, self.dataflow_export_interface.worker):
+            if worker is not None and worker.isRunning():
+                if hasattr(worker, "kill_child_process"):
+                    worker.kill_child_process()
+                worker.terminate()
+                worker.wait(2000)
+
+        script = os.path.abspath(sys.argv[0])
+        if getattr(sys, "frozen", False):
+            args = [sys.executable] + sys.argv[1:]
+        else:
+            args = [sys.executable, script] + sys.argv[1:]
+        subprocess.Popen(args, cwd=os.path.dirname(script))
+
+        QApplication.instance().quit()
+
 
 def main():
-    from PySide6.QtWidgets import QApplication
-
     cfg = app_settings.load()
     setTheme(Theme.DARK if cfg.get("theme", "dark") == "dark" else Theme.LIGHT)
 

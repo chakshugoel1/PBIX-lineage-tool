@@ -12,10 +12,15 @@ RESULT_PREFIX = "##RESULT##"
 _SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "powershell", "Export-AllDataflows.ps1")
 
 
-def export_all_dataflows(workspace_id, output_dir, archive_previous=True, progress_cb=None):
+def export_all_dataflows(workspace_id, output_dir, archive_previous=True, progress_cb=None, proc_holder=None):
     """Runs the PowerShell exporter and streams its output through
     `progress_cb`. Returns (True, {"files": [...], "message": ...}) on
-    success or (False, error_message) on failure."""
+    success or (False, error_message) on failure.
+
+    If `proc_holder` (a list) is passed, the running subprocess.Popen is
+    appended to it as soon as it starts, so a caller on another thread can
+    kill it (e.g. on a hard reset) even while this call is still blocked
+    reading its output."""
     if not workspace_id:
         return False, "Workspace ID is required."
     if not output_dir:
@@ -40,6 +45,8 @@ def export_all_dataflows(workspace_id, output_dir, archive_previous=True, progre
         )
     except FileNotFoundError:
         return False, "PowerShell is not available on this machine."
+    if proc_holder is not None:
+        proc_holder.append(proc)
 
     result = None
     for line in proc.stdout:

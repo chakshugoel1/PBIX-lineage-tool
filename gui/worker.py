@@ -125,13 +125,21 @@ class DataflowExportWorker(QThread):
         self.workspace_id = workspace_id
         self.output_dir = output_dir
         self.archive_previous = archive_previous
+        self.proc_holder = []
 
     def run(self):
         success, result = dataflow_export.export_all_dataflows(
             self.workspace_id, self.output_dir,
             archive_previous=self.archive_previous, progress_cb=self.progress.emit,
+            proc_holder=self.proc_holder,
         )
         if success:
             self.finished_ok.emit(result)
         else:
             self.failed.emit(result)
+
+    def kill_child_process(self):
+        """Force-kills the PowerShell exporter subprocess, if one is running (used by hard reset)."""
+        for proc in self.proc_holder:
+            if proc.poll() is None:
+                proc.kill()
