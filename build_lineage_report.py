@@ -14,6 +14,7 @@ Setup (see README.md for full instructions):
 """
 import sys
 import os
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pbixray import PBIXRay
@@ -69,6 +70,7 @@ def load_everything(pbix_path=None, dataflow_folder=None):
 
     return {
         "model": model,
+        "pbix_path": pbix_path,
         "entries": entries,
         "pbix_universe": pbix_universe,
         "direct": direct,
@@ -80,6 +82,18 @@ def load_everything(pbix_path=None, dataflow_folder=None):
         "guid_cache": guid_cache,
         "used_tables": used_tables,
     }
+
+
+def _report_name_from_pbix(pbix_path):
+    """Human-readable report name derived from the PBIX file's own name (no extension)."""
+    return os.path.splitext(os.path.basename(pbix_path))[0] if pbix_path else "Report"
+
+
+def _sheet_title_from_pbix(pbix_path):
+    """Excel sheet titles can't contain \\/*?:[] and are capped at 31 chars."""
+    name = _report_name_from_pbix(pbix_path)
+    safe = re.sub(r'[\\/*?:\[\]]', " ", name).strip()
+    return safe[:31] or "Report"
 
 
 def format_final_source(phys):
@@ -348,7 +362,7 @@ def write_workbook(rows, ctx, output_path=None):
     output_path = output_path or OUTPUT_PATH
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "CashPlus"
+    ws.title = _sheet_title_from_pbix(ctx.get("pbix_path"))
 
     for c, h in enumerate(HEADERS, start=1):
         cell = ws.cell(row=1, column=c, value=h)
@@ -363,7 +377,7 @@ def write_workbook(rows, ctx, output_path=None):
     ws.cell(row=4, column=1).fill = RED_FILL
     ws.cell(row=5, column=1, value="Needs Manual Override (source found, please confirm)")
     ws.cell(row=5, column=1).fill = YELLOW_FILL
-    ws.cell(row=2, column=2, value="Report: CashPlus - Dashboard\nDownloaded: WKS DTF FINANCE")
+    ws.cell(row=2, column=2, value=f"Report: {_report_name_from_pbix(ctx.get('pbix_path'))}\nDownloaded: WKS DTF FINANCE")
 
     r = 6
     dataflows_used_l1 = set()
