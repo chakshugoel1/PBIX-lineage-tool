@@ -552,7 +552,14 @@ class MainWindow(FluentWindow):
             args = [sys.executable] + sys.argv[1:]
         else:
             args = [sys.executable, script] + sys.argv[1:]
-        subprocess.Popen(args, cwd=os.path.dirname(script))
+
+        # Fully detach from this process's console/std handles - otherwise, on
+        # Windows, the new process can get torn down along with this one (or
+        # its parent terminal) before its own window even appears.
+        popen_kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        subprocess.Popen(args, cwd=os.path.dirname(script), **popen_kwargs)
 
         QApplication.instance().quit()
 
