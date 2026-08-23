@@ -26,8 +26,12 @@ Resolution has two stages:
 
 import glob
 import json
+import logging
 import os
 import re
+import time
+
+logger = logging.getLogger(__name__)
 
 
 def powerbi_service_url(workspace_id, dataflow_id):
@@ -118,12 +122,17 @@ def extract_fields(text):
     returned as-matched (quotes included if quoted); callers that need a
     plain string should unquote() the token themselves (see workspace/
     dataflow/entity usage below), same as before this was generalized."""
+    if not text or not isinstance(text, str):
+        return {}
     found = {}
-    for m in RE_FIELD_EQ_A.finditer(text):
-        found.setdefault(m.group(1), []).append(m.group(2))
-    for rm in RE_RECORD_SELECTOR.finditer(text):
-        for m in RE_FIELD_PAIR.finditer(rm.group(1)):
+    try:
+        for m in RE_FIELD_EQ_A.finditer(text):
             found.setdefault(m.group(1), []).append(m.group(2))
+        for rm in RE_RECORD_SELECTOR.finditer(text):
+            for m in RE_FIELD_PAIR.finditer(rm.group(1)):
+                found.setdefault(m.group(1), []).append(m.group(2))
+    except Exception as e:
+        logger.error(f"Error extracting fields from M code: {e}")
     return found
 
 
@@ -152,13 +161,18 @@ def resolve_value_token(token, local_map, universe, global_params=None):
     name."""
     if token is None:
         return None
+    if not isinstance(token, str):
+        return None
+    token = token.strip()
     if token.startswith('"'):
         return unquote(token)
     if token in local_map:
         return local_map[token]
     if global_params and token in global_params:
         return global_params[token]
-    return universe.resolve_literal(token)
+    if universe:
+        return universe.resolve_literal(token)
+    return None
 
 
 def _local_map_of(text):
@@ -166,17 +180,17 @@ def _local_map_of(text):
     local_map.update({m.group(1): m.group(2) for m in RE_LOCAL_ASSIGN_QUOTED.finditer(text)})
     return local_map
 
-# physical-connector patterns
-RE_ORACLE = re.compile(r'Oracle\.Database\(\s*(#"[^"]+"|"[^"]*"|[A-Za-z_][\w]*)')
+# physical-connector patterns (with improved whitespace handling)
+RE_ORACLE = re.compile(r'Oracle\.Database\s*\(\s*(?://[^\n]*\n\s*)*(#"[^"]+"|"[^"]*"|[A-Za-z_][\w]*)', re.MULTILINE)
 
-RE_SHAREPOINT_SITE = re.compile(r'SharePoint\.Files\(\s*(#"[^"]+"|"[^"]*")')
+RE_SHAREPOINT_SITE = re.compile(r'SharePoint\.Files\s*\(\s*(?://[^\n]*\n\s*)*(#"[^"]+"|"[^"]*")', re.MULTILINE)
 RE_FOLDER_PATH_FILTER = re.compile(r'\[Folder Path\]\s*=\s*(#"[^"]+"|"[^"]*")')
 RE_TEXT_CONTAINS_FOLDER = re.compile(r'Text\.Contains\(\[Folder Path\],\s*"([^"]+)"\)')
 RE_NAME_FILTER = re.compile(r'\[Name\]\s*=\s*"([^"]+)"')
-RE_EXCEL_WORKBOOK = re.compile(r'Excel\.Workbook\(')
-RE_CSV_DOCUMENT = re.compile(r'Csv\.Document\(\s*(#"[^"]+"|"[^"]*"|[A-Za-z_][\w]*)')
-RE_JSON_DOCUMENT = re.compile(r'Json\.Document\(')
-RE_WEB_CONTENTS = re.compile(r'Web\.Contents\(\s*"([^"]+)"')
+RE_EXCEL_WORKBOOK = re.compile(r'Excel\.Workbook\s*\(')
+RE_CSV_DOCUMENT = re.compile(r'Csv\.Document\s*\(\s*(?://[^\n]*\n\s*)*(#"[^"]+"|"[^"]*"|[A-Za-z_][\w]*)', re.MULTILINE)
+RE_JSON_DOCUMENT = re.compile(r'Json\.Document\s*\(')
+RE_WEB_CONTENTS = re.compile(r'Web\.Contents\s*\(\s*"([^"]+)"')
 
 RE_TABLE_COMBINE = re.compile(r'Table\.Combine\(\s*\{(.*?)\}\s*\)', re.DOTALL)
 RE_SOURCE_STEP = re.compile(r'\bSource\s*=\s*(#"[^"]+"|[A-Za-z_][\w]*)\s*[,\n]')
@@ -194,9 +208,15 @@ CONNECTOR_ORDER = [
 
 
 def unquote(token):
+    """Unquote an M string literal, returning None if token is None or not a valid string."""
     if token is None:
         return None
+    if not isinstance(token, str):
+        logger.warning(f"unquote() called with non-string type {type(token).__name__}: {token}")
+        return None
     token = token.strip()
+    if not token:
+        return None
     if token.startswith('"') and token.endswith('"'):
         return token[1:-1].replace('\\"', '"')
     return token
@@ -286,7 +306,13 @@ class Universe:
         self._deps_cache = {}
 
     def get(self, name):
-        return self.texts.get(name)
+        """Get expression text by name, logging warnings for empty/None values."""
+        value = self.texts.get(name)
+        if value == "":
+            logger.warning(f"Query/table '{name}' has empty M expression (may indicate corrupted PBIX export)")
+        elif value is None:
+            logger.debug(f"Query/table '{name}' not found in universe")
+        return value
 
     def __contains__(self, name):
         return name in self.texts
@@ -543,9 +569,19 @@ def _resolve_duplicate_group(base_name, files):
     parsed = []
     for fp in files:
         try:
-            raw = json.load(open(fp, encoding="utf-8"))
+            with open(fp, encoding="utf-8") as f:
+                raw = json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error(f"Dataflow JSON file '{os.path.basename(fp)}' is corrupted or invalid: {e}")
+            parsed.append({"path": fp, "raw": None, "error": f"JSON parse error: {e}", "is_critical": True})
+            continue
+        except FileNotFoundError:
+            logger.error(f"Dataflow file not found: {fp}")
+            parsed.append({"path": fp, "raw": None, "error": "File not found", "is_critical": True})
+            continue
         except Exception as e:
-            parsed.append({"path": fp, "raw": None, "error": str(e)})
+            logger.error(f"Cannot read dataflow file '{os.path.basename(fp)}': {e}")
+            parsed.append({"path": fp, "raw": None, "error": f"File read error: {e}", "is_critical": True})
             continue
         parsed.append({"path": fp, "raw": raw, "modifiedTime": raw.get("modifiedTime", "")})
 
@@ -583,16 +619,20 @@ def load_dataflows(folder):
     entity_index is built, so a duplicate export never shows up as a separate
     "ambiguous entity match" candidate for unrelated cross-dataflow lookups.
 
-    Raises RuntimeError if no .json files are found anywhere under folder,
-    instead of silently returning an empty dict (which used to make every
-    table look unresolved with no indication of why).
+    Raises RuntimeError if folder doesn't exist or no .json files are found anywhere,
+    with helpful error messages.
     """
+    if not os.path.isdir(folder):
+        raise RuntimeError(
+            f"Dataflow folder does not exist: '{folder}'\n"
+            f"Check config.DATAFLOW_FOLDER path and ensure the folder is accessible."
+        )
+
     files = glob.glob(os.path.join(folder, "**", "*.json"), recursive=True)
     if not files:
         raise RuntimeError(
             f"No dataflow .json files found in '{folder}' (including subfolders). "
-            "Check that the Dataflow folder path is correct and contains the exported "
-            "dataflow JSON files."
+            "Check that the folder contains the exported dataflow JSON files."
         )
 
     groups = {}
@@ -606,9 +646,19 @@ def load_dataflows(folder):
         if len(group_files) == 1:
             fp = group_files[0]
             try:
-                raw = json.load(open(fp, encoding="utf-8"))
+                with open(fp, encoding="utf-8") as f:
+                    raw = json.load(f)
+            except json.JSONDecodeError as e:
+                logger.error(f"Dataflow JSON file '{os.path.basename(fp)}' is corrupted or invalid: {e}")
+                dataflows[base_name] = {"entities": {}, "queries": {}, "path": fp, "error": f"JSON parse error: {e}", "error_is_critical": True}
+                continue
+            except FileNotFoundError:
+                logger.error(f"Dataflow file not found: {fp}")
+                dataflows[base_name] = {"entities": {}, "queries": {}, "path": fp, "error": "File not found", "error_is_critical": True}
+                continue
             except Exception as e:
-                dataflows[base_name] = {"entities": {}, "queries": {}, "path": fp, "error": str(e)}
+                logger.error(f"Cannot read dataflow file '{os.path.basename(fp)}': {e}")
+                dataflows[base_name] = {"entities": {}, "queries": {}, "path": fp, "error": f"File read error: {e}", "error_is_critical": True}
                 continue
             dataflows[base_name] = _build_dataflow_entry(fp, raw)
         else:
@@ -675,8 +725,16 @@ def extract_dataflow_binding_strict(text, universe: Universe, guid_cache=None):
 
     ws_val = resolve_tok(ws_tokens[0]) if ws_tokens else None
     df_val = resolve_tok(df_tokens[0]) if df_tokens else None
-    if not df_val and df_ids and ws_ids and f"{ws_ids[0]}/{df_ids[0]}" in guid_cache:
-        df_val = guid_cache[f"{ws_ids[0]}/{df_ids[0]}"]
+
+    # Attempt GUID cache lookup with logging
+    if not df_val and df_ids and ws_ids:
+        cache_key = f"{ws_ids[0]}/{df_ids[0]}"
+        if cache_key in guid_cache:
+            df_val = guid_cache[cache_key]
+            logger.debug(f"GUID cache hit: {cache_key} -> '{df_val}'")
+        else:
+            logger.debug(f"GUID cache miss: {cache_key} not in cache")
+
     if not ws_val and ws_ids:
         ws_val = f"(workspaceId GUID) {ws_ids[0]}"
     if not df_val and df_ids:
@@ -762,14 +820,21 @@ def extract_physical_details(connector_label, text, universe: Universe):
 
 def resolve_within_universe(name, universe: Universe, stem, dataflows=None, entity_index=None, name_index=None,
                              entity_of=None, inherited_entity=None, inherited_table=None, inherited_schema=None,
-                             visited=None, depth=0, guid_cache=None):
+                             visited=None, depth=0, guid_cache=None, max_depth=None):
+    import config  # Import here to avoid circular imports
+    if max_depth is None:
+        max_depth = config.MAX_DEPENDENCY_DEPTH
+
     if visited is None:
         visited = set()
     if entity_of is None:
         entity_of = build_entity_of(universe)
     key = (stem, name)
-    if key in visited or depth > 25:
-        return {"unresolved": True, "reason": "cycle or depth-limit reached"}
+    if key in visited:
+        return {"unresolved": True, "reason": f"Circular dependency detected involving '{name}' in dataflow '{stem}'"}
+    if depth > max_depth:
+        logger.warning(f"Maximum dependency depth ({max_depth}) exceeded while resolving '{name}' in dataflow '{stem}'; stopping traversal")
+        return {"unresolved": True, "reason": f"Exceeded max dependency depth ({max_depth}); check for undeclared cycles or extremely nested transformations"}
     visited.add(key)
 
     text = universe.get(name)

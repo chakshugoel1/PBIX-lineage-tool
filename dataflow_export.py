@@ -5,14 +5,16 @@ separate from the lineage pipeline so it cannot affect it."""
 import json
 import os
 import subprocess
+import time
 
+import config
 import fileutils
 
 RESULT_PREFIX = "##RESULT##"
 _SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "powershell", "Export-AllDataflows.ps1")
 
 
-def export_all_dataflows(workspace_id, output_dir, archive_previous=True, progress_cb=None, proc_holder=None):
+def export_all_dataflows(workspace_id, output_dir, archive_previous=True, progress_cb=None, proc_holder=None, timeout_seconds=None):
     """Runs the PowerShell exporter and streams its output through
     `progress_cb`. Returns (True, {"files": [...], "message": ...}) on
     success or (False, error_message) on failure.
@@ -20,12 +22,13 @@ def export_all_dataflows(workspace_id, output_dir, archive_previous=True, progre
     If `proc_holder` (a list) is passed, the running subprocess.Popen is
     appended to it as soon as it starts, so a caller on another thread can
     kill it (e.g. on a hard reset) even while this call is still blocked
-    reading its output."""
+    reading its output. Default timeout is config.POWERSHELL_EXPORT_TIMEOUT."""
     if not workspace_id:
         return False, "Workspace ID is required."
     if not output_dir:
         return False, "Output folder is required."
 
+    timeout_seconds = timeout_seconds or config.POWERSHELL_EXPORT_TIMEOUT
     emit = progress_cb or (lambda line: None)
 
     if archive_previous and os.path.isdir(output_dir):
@@ -49,18 +52,33 @@ def export_all_dataflows(workspace_id, output_dir, archive_previous=True, progre
         proc_holder.append(proc)
 
     result = None
-    for line in proc.stdout:
-        line = line.rstrip("\r\n")
-        if not line:
-            continue
-        if line.startswith(RESULT_PREFIX):
-            try:
-                result = json.loads(line[len(RESULT_PREFIX):])
-            except json.JSONDecodeError:
-                pass
-        else:
-            emit(line)
-    proc.wait()
+    start_time = time.time()
+    try:
+        for line in proc.stdout:
+            # Check timeout on each line
+            elapsed = time.time() - start_time
+            if elapsed > timeout_seconds:
+                proc.kill()
+                proc.wait()
+                return False, f"Export timed out after {timeout_seconds} seconds. Process killed."
+
+            line = line.rstrip("\r\n")
+            if not line:
+                continue
+            if line.startswith(RESULT_PREFIX):
+                try:
+                    result = json.loads(line[len(RESULT_PREFIX):])
+                except json.JSONDecodeError:
+                    pass
+            else:
+                emit(line)
+        proc.wait()
+    except Exception as e:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return False, f"Export process error: {e}"
 
     if result is None:
         return False, "The export script did not report a result (it may have crashed)."

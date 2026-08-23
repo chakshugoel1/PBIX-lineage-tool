@@ -20,8 +20,20 @@ def archive_if_exists(path, output_folder, archive_previous=True):
         shutil.move(path, os.path.join(dest_dir, os.path.basename(path)))
 
 
-def sanitize_filename(name):
-    """Replace characters that are invalid in Windows filenames with '_', so
-    an arbitrary entity/table name can be used safely as a file name."""
+def sanitize_filename(name, max_length=255):
+    """Replace characters that are invalid in Windows filenames with '_' and
+    truncate to Windows filename limit (255 chars) if necessary."""
     cleaned = _INVALID_FILENAME_CHARS.sub("_", name).strip().strip(".")
-    return cleaned or "export"
+    cleaned = cleaned or "export"
+
+    if len(cleaned) > max_length:
+        # Truncate to fit within limit, preserving the constraint
+        original = cleaned
+        cleaned = cleaned[:max_length]
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Filename truncated from {len(original)} to {len(cleaned)} chars: "
+            f"'{original[:50]}...' -> '{cleaned[:50]}...'"
+        )
+
+    return cleaned

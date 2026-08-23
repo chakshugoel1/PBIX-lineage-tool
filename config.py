@@ -33,6 +33,14 @@ def pbix_stem(pbix_path):
 
 _PBIX_STEM = pbix_stem(PBIX_PATH)
 
+# --- Configuration --------------------------------------------------------
+# Maximum allowed depth when recursively resolving M query dependencies.
+# Protects against stack overflow on cyclic/deeply-nested transformations.
+MAX_DEPENDENCY_DEPTH = 25
+
+# Timeout (seconds) for PowerShell dataflow export subprocess.
+POWERSHELL_EXPORT_TIMEOUT = 600  # 10 minutes
+
 # --- Outputs ----------------------------------------------------------------
 GENERATED_XLSX = _p(f"Generated_{_PBIX_STEM}_Lineage.xlsx")
 COMPARISON_XLSX = _p(f"Final_Source_Comparison_{_PBIX_STEM}.xlsx")

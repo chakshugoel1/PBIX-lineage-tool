@@ -48,6 +48,14 @@ def _safe_column_set(df, col):
 def load_everything(pbix_path=None, dataflow_folder=None):
     pbix_path = pbix_path or PBIX_PATH
     dataflow_folder = dataflow_folder or DATAFLOW_FOLDER
+
+    # Validate PBIX file exists before attempting to load
+    if not os.path.isfile(pbix_path):
+        raise FileNotFoundError(
+            f"PBIX file not found: '{pbix_path}'\n"
+            f"Check config.PBIX_PATH and ensure the file exists and is accessible."
+        )
+
     model = PBIXRay(pbix_path)
     entries = {}
     for _, row in model.power_query.iterrows():
@@ -370,6 +378,15 @@ def build_report(pbix_path=None, dataflow_folder=None):
 
 def write_workbook(rows, ctx, output_path=None):
     output_path = output_path or OUTPUT_PATH
+
+    # Ensure output directory exists before attempting to write
+    output_dir = os.path.dirname(output_path)
+    if output_dir and not os.path.isdir(output_dir):
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except Exception as e:
+            raise IOError(f"Cannot create output directory '{output_dir}': {e}")
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = _sheet_title_from_pbix(ctx.get("pbix_path"))
@@ -487,7 +504,10 @@ def write_workbook(rows, ctx, output_path=None):
 
     btr.add_transformations_sheet(wb, rows, ctx)
 
-    wb.save(output_path)
+    try:
+        wb.save(output_path)
+    except Exception as e:
+        raise IOError(f"Cannot write to '{output_path}': {e}")
     print(f"Saved: {output_path}")
 
     unrecognized = ctx.get("unrecognized_dataflow_patterns") or []
