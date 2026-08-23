@@ -4,6 +4,7 @@
 # Python cache
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Runtime output archives created by the app
 previous_runs/
@@ -12,11 +13,13 @@ previous_runs/
 # do not publish real client PBIX files, dataflow exports, or generated
 # reports built from them to this public repo.
 DTS - CashPlus-Dashboard (1).pbix
+DTS - Classification Pays - BLUE.pbix
 CASHPLUS-DASHBOARD 1.xlsx
 Generated_*_Lineage.xlsx
 Dataflow_Table_Lineage_Report_*.xlsx
 Final_Source_Comparison_*.xlsx
 Final_Source_Comparison_*_backup.xlsx
+Review_Transformations_Real_Data.xlsx
 guid_dataflow_names.json
 PowerBIDataflows/
 _validation_output.txt
