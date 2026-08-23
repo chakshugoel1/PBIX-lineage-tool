@@ -15,7 +15,9 @@ Setup (see README.md for full instructions):
 import sys
 import os
 import re
+import shutil
 
+import fileutils
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pbixray import PBIXRay
 import lineage_lib as ll
@@ -55,6 +57,10 @@ def load_everything(pbix_path=None, dataflow_folder=None):
             f"PBIX file not found: '{pbix_path}'\n"
             f"Check config.PBIX_PATH and ensure the file exists and is accessible."
         )
+    if not os.access(pbix_path, os.R_OK):
+        raise PermissionError(f"PBIX file is not readable: '{pbix_path}'")
+    if not os.path.isdir(dataflow_folder):
+        raise FileNotFoundError(f"Dataflow folder not found: '{dataflow_folder}'")
 
     model = PBIXRay(pbix_path)
     entries = {}
@@ -360,13 +366,15 @@ def _resolve_table_row_inner(table, ctx):
     }
 
 
-def build_report(pbix_path=None, dataflow_folder=None):
+def build_report(pbix_path=None, dataflow_folder=None, cancellation_event=None):
     ctx = load_everything(pbix_path, dataflow_folder)
     model = ctx["model"]
     tables = list(model.tables)
 
     rows = []
     for t in sorted(tables):
+        if cancellation_event is not None and cancellation_event.is_set():
+            raise RuntimeError("Pipeline cancelled.")
         info = resolve_table_row(t, ctx)
         is_used = t in ctx["used_tables"]
         info["table"] = t
@@ -505,7 +513,7 @@ def write_workbook(rows, ctx, output_path=None):
     btr.add_transformations_sheet(wb, rows, ctx)
 
     try:
-        wb.save(output_path)
+        fileutils.atomic_replace_workbook(wb, output_path)
     except Exception as e:
         raise IOError(f"Cannot write to '{output_path}': {e}")
     print(f"Saved: {output_path}")

@@ -542,10 +542,14 @@ class MainWindow(FluentWindow):
 
         for worker in (self.home_interface.worker, self.dataflow_export_interface.worker):
             if worker is not None and worker.isRunning():
+                if hasattr(worker, "request_cancel"):
+                    worker.request_cancel()
                 if hasattr(worker, "kill_child_process"):
                     worker.kill_child_process()
-                worker.terminate()
                 worker.wait(2000)
+                if worker.isRunning():
+                    worker.terminate()
+                    worker.wait(1000)
 
         script = os.path.abspath(sys.argv[0])
         if getattr(sys, "frozen", False):

@@ -4,8 +4,11 @@ Reuses the engine's own print()-based progress output by capturing stdout
 and re-emitting each line as a Qt signal - no changes needed to the engine's
 resolution logic."""
 import io
+import logging
 import os
 import sys
+import threading
+import traceback
 
 from PySide6.QtCore import QThread, Signal
 
@@ -15,6 +18,8 @@ import config
 import dataflow_export
 import fileutils
 from gui import updater
+
+logger = logging.getLogger(__name__)
 
 
 class _StreamEmitter(io.TextIOBase):
@@ -46,6 +51,10 @@ class PipelineWorker(QThread):
         self.dataflow_folder = dataflow_folder
         self.output_folder = output_folder
         self.archive_previous = archive_previous
+        self.cancel_event = threading.Event()
+
+    def request_cancel(self):
+        self.cancel_event.set()
 
     def run(self):
         old_stdout = sys.stdout
@@ -60,8 +69,15 @@ class PipelineWorker(QThread):
             fileutils.archive_if_exists(generated_path, self.output_folder, self.archive_previous)
             fileutils.archive_if_exists(dataflow_lineage_path, self.output_folder, self.archive_previous)
 
-            rows, ctx = blr.build_report(self.pbix_path, self.dataflow_folder)
+            rows, ctx = blr.build_report(
+                self.pbix_path, self.dataflow_folder,
+                cancellation_event=self.cancel_event,
+            )
+            if self.cancel_event.is_set():
+                raise RuntimeError("Pipeline cancelled.")
             blr.write_workbook(rows, ctx, generated_path)
+            if self.cancel_event.is_set():
+                raise RuntimeError("Pipeline cancelled.")
             dtlr.build_and_save(ctx, output_path=dataflow_lineage_path)
 
             summary = {
@@ -87,6 +103,7 @@ class PipelineWorker(QThread):
                 f"overwritten. Please close it and try again.\n\n{e}"
             )
         except Exception as e:
+            logger.exception("Pipeline worker failed")
             error_message = str(e)
         finally:
             sys.stdout = old_stdout
@@ -105,11 +122,15 @@ class UpdateWorker(QThread):
     failed = Signal(str)
 
     def run(self):
-        success, message = updater.run_update(progress_cb=self.progress.emit)
-        if success:
-            self.finished_ok.emit(message)
-        else:
-            self.failed.emit(message)
+        try:
+            success, message = updater.run_update(progress_cb=self.progress.emit)
+            if success:
+                self.finished_ok.emit(message)
+            else:
+                self.failed.emit(message)
+        except Exception as e:
+            logger.exception("Update worker failed")
+            self.failed.emit(f"Update failed: {e}")
 
 
 class DataflowExportWorker(QThread):
@@ -128,15 +149,19 @@ class DataflowExportWorker(QThread):
         self.proc_holder = []
 
     def run(self):
-        success, result = dataflow_export.export_all_dataflows(
-            self.workspace_id, self.output_dir,
-            archive_previous=self.archive_previous, progress_cb=self.progress.emit,
-            proc_holder=self.proc_holder,
-        )
-        if success:
-            self.finished_ok.emit(result)
-        else:
-            self.failed.emit(result)
+        try:
+            success, result = dataflow_export.export_all_dataflows(
+                self.workspace_id, self.output_dir,
+                archive_previous=self.archive_previous, progress_cb=self.progress.emit,
+                proc_holder=self.proc_holder,
+            )
+            if success:
+                self.finished_ok.emit(result)
+            else:
+                self.failed.emit(result)
+        except Exception as e:
+            logger.exception("Dataflow export worker failed")
+            self.failed.emit(f"Export failed: {e}")
 
     def kill_child_process(self):
         """Force-kills the PowerShell exporter subprocess, if one is running (used by hard reset)."""

@@ -3,6 +3,7 @@ import datetime
 import os
 import re
 import shutil
+import tempfile
 
 # Characters not allowed in Windows filenames, plus control characters.
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -18,6 +19,19 @@ def archive_if_exists(path, output_folder, archive_previous=True):
         dest_dir = os.path.join(output_folder, "previous_runs", stamp)
         os.makedirs(dest_dir, exist_ok=True)
         shutil.move(path, os.path.join(dest_dir, os.path.basename(path)))
+
+
+def atomic_replace_workbook(workbook, output_path):
+    """Save a workbook beside the destination, then replace it atomically."""
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    fd, temp_path = tempfile.mkstemp(prefix=".lineage-", suffix=".xlsx", dir=output_dir)
+    os.close(fd)
+    try:
+        workbook.save(temp_path)
+        os.replace(temp_path, output_path)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 def sanitize_filename(name, max_length=255):

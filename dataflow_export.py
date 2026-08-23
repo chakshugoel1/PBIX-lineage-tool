@@ -4,7 +4,9 @@ at once), by shelling out to powershell/Export-AllDataflows.ps1. Kept
 separate from the lineage pipeline so it cannot affect it."""
 import json
 import os
+import queue
 import subprocess
+import threading
 import time
 
 import config
@@ -52,16 +54,31 @@ def export_all_dataflows(workspace_id, output_dir, archive_previous=True, progre
         proc_holder.append(proc)
 
     result = None
-    start_time = time.time()
+    start_time = time.monotonic()
+    lines = queue.Queue()
+
+    def read_output():
+        try:
+            for output_line in proc.stdout:
+                lines.put(("line", output_line))
+        finally:
+            lines.put(("eof", None))
+
+    reader = threading.Thread(target=read_output, name="dataflow-export-reader", daemon=True)
+    reader.start()
     try:
-        for line in proc.stdout:
-            # Check timeout on each line
-            elapsed = time.time() - start_time
-            if elapsed > timeout_seconds:
+        while True:
+            elapsed = time.monotonic() - start_time
+            if elapsed >= timeout_seconds:
                 proc.kill()
                 proc.wait()
                 return False, f"Export timed out after {timeout_seconds} seconds. Process killed."
-
+            try:
+                kind, line = lines.get(timeout=min(0.25, timeout_seconds - elapsed))
+            except queue.Empty:
+                continue
+            if kind == "eof":
+                break
             line = line.rstrip("\r\n")
             if not line:
                 continue
