@@ -45,19 +45,16 @@ try:
 except ImportError:
     sys.exit("Missing dependency. Install with:  pip install pbixray")
 
+import lineage_lib as ll
+
 # --- regex patterns -------------------------------------------------------
-RE_USES_DATAFLOW_CONNECTOR = re.compile(r'PowerPlatform\.Dataflows|Dataflows\.Contents')
-RE_WORKSPACE_NAME = re.compile(r'\[workspaceName\]\s*=\s*("(?:[^"\\]|\\.)*"|[A-Za-z_][A-Za-z0-9_\-]*)')
-RE_DATAFLOW_NAME = re.compile(r'\[dataflowName\]\s*=\s*("(?:[^"\\]|\\.)*"|[A-Za-z_][A-Za-z0-9_\-]*)')
-RE_WORKSPACE_ID = re.compile(r'\[workspaceId\s*=\s*"([^"]+)"\]')
-RE_DATAFLOW_ID = re.compile(r'\[dataflowId\s*=\s*"([^"]+)"\]')
+# workspaceName/dataflowName/workspaceId/dataflowId/entity extraction and the
+# connector-call detector live in lineage_lib.py (ll.field_values /
+# ll.first_field_value / ll.RE_USES_DATAFLOW_CONNECTOR) so this standalone
+# script can't drift out of sync with the main pipeline's parsing logic, as
+# it previously did.
 RE_LOCAL_ASSIGN = re.compile(r'\b([A-Za-z_][A-Za-z0-9_\-]*)\s*=\s*"((?:[^"\\]|\\.)*)"')
 RE_SIMPLE_QUOTED = re.compile(r'^"((?:[^"\\]|\\.)*)"')
-
-# The dataflow "entity" (the actual table inside the dataflow) shows up as
-# either  Liste{[entity="XXX"]}[Data]   or   Table.SelectRows(t, each [entity] = "XXX")
-RE_ENTITY_INDEX = re.compile(r'\{\[entity\s*=\s*"((?:[^"\\]|\\.)*)"')
-RE_ENTITY_FILTER = re.compile(r'\[entity\]\s*=\s*"((?:[^"\\]|\\.)*)"')
 
 
 def unquote(token: str) -> str:
@@ -88,13 +85,7 @@ def build_global_param_values(entries):
 
 
 def extract_entity(text: str):
-    m = RE_ENTITY_INDEX.search(text)
-    if m:
-        return m.group(1)
-    m = RE_ENTITY_FILTER.search(text)
-    if m:
-        return m.group(1)
-    return None
+    return ll.first_field_value(text, "entity")
 
 
 def load_entries(pbix_path):
@@ -116,13 +107,13 @@ def analyze_direct_bindings(entries, global_params):
     enumerators = {}  # name -> workspace value (query lists all dataflows of a workspace)
 
     for _, name, text in entries:
-        if not RE_USES_DATAFLOW_CONNECTOR.search(text):
+        if not ll.RE_USES_DATAFLOW_CONNECTOR.search(text):
             continue
         local_map = {m.group(1): m.group(2) for m in RE_LOCAL_ASSIGN.finditer(text)}
-        ws_tokens = RE_WORKSPACE_NAME.findall(text)
-        df_tokens = RE_DATAFLOW_NAME.findall(text)
-        ws_ids = RE_WORKSPACE_ID.findall(text)
-        df_ids = RE_DATAFLOW_ID.findall(text)
+        ws_tokens = ll.field_values(text, "workspaceName")
+        df_tokens = ll.field_values(text, "dataflowName")
+        ws_ids = [ll.unquote(t) for t in ll.field_values(text, "workspaceId")]
+        df_ids = [ll.unquote(t) for t in ll.field_values(text, "dataflowId")]
         entity = extract_entity(text)
 
         ws_val = resolve_token(ws_tokens[0], local_map, global_params) if ws_tokens else None
@@ -148,7 +139,7 @@ def analyze_direct_bindings(entries, global_params):
     for _, name, text in entries:
         if name in direct:
             continue
-        df_tokens = RE_DATAFLOW_NAME.findall(text)
+        df_tokens = ll.field_values(text, "dataflowName")
         if not df_tokens:
             continue
         matched_enum = next((e for e in enumerators if re.search(r'\b' + re.escape(e) + r'\b', text)), None)

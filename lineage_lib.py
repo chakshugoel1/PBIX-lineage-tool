@@ -85,27 +85,94 @@ def classify_unresolved_reason(reason):
 # from extract_dataflow_names.py / extract_table_dataflow_lineage.py
 # --------------------------------------------------------------------------
 RE_USES_DATAFLOW_CONNECTOR = re.compile(r'PowerPlatform\.Dataflows|Dataflows\.Contents|PowerBI\.Dataflows')
-RE_WORKSPACE_NAME = re.compile(r'\[workspaceName\]\s*=\s*("(?:[^"\\]|\\.)*"|[A-Za-z_][A-Za-z0-9_\-]*)')
-RE_DATAFLOW_NAME = re.compile(r'\[dataflowName\]\s*=\s*("(?:[^"\\]|\\.)*"|[A-Za-z_][A-Za-z0-9_\-]*)')
-RE_WORKSPACE_ID = re.compile(r'\[workspaceId\s*=\s*"([^"]+)"\]')
-RE_DATAFLOW_ID = re.compile(r'\[dataflowId\s*=\s*"([^"]+)"\]')
+
+# Power Query renders a "field = value" record filter/selector in one of two
+# shapes depending on how the M code was authored, and both are common:
+#   Style A: [field] = value     (a filter predicate, e.g. `each [x] = y`)
+#   Style B: [field = value, field2 = value2, ...]   (a record-selector key
+#            lookup, e.g. T{[x = y]} or Oracle's T{[Schema = "S", Item = "I"]},
+#            what Power BI's Navigator UI auto-generates - M records can hold
+#            any number of comma-separated field=value pairs in one bracket)
+# RE_FIELD_EQ_A / RE_RECORD_SELECTOR+RE_FIELD_PAIR match either shape for ANY
+# field name in one pass, so looking for a field this tool doesn't already
+# know about needs no new regex - just a new field_values()/
+# first_field_value() call below.
+_FIELD_IDENT = r'[A-Za-z_][A-Za-z0-9_]*'
+_FIELD_VALUE = r'"(?:[^"\\]|\\.)*"|#"(?:[^"\\]|\\.)*"|[A-Za-z_][A-Za-z0-9_.\-]*'
+_FIELD_PAIR = rf'{_FIELD_IDENT}\s*=\s*(?:{_FIELD_VALUE})'
+RE_FIELD_EQ_A = re.compile(rf'\[\s*({_FIELD_IDENT})\s*\]\s*=\s*({_FIELD_VALUE})')       # Style A
+RE_RECORD_SELECTOR = re.compile(rf'\[\s*({_FIELD_PAIR}(?:\s*,\s*{_FIELD_PAIR})*)\s*\]')  # Style B (whole bracket body)
+RE_FIELD_PAIR = re.compile(rf'({_FIELD_IDENT})\s*=\s*({_FIELD_VALUE})')                 # one field=value pair within a Style B body
 RE_LOCAL_ASSIGN = re.compile(r'\b([A-Za-z_][A-Za-z0-9_\-]*)\s*=\s*"((?:[^"\\]|\\.)*)"')
 RE_LOCAL_ASSIGN_QUOTED = re.compile(r'#"([^"]+)"\s*=\s*"((?:[^"\\]|\\.)*)"')
 RE_SIMPLE_QUOTED = re.compile(r'^"((?:[^"\\]|\\.)*)"')
-RE_ENTITY_INDEX = re.compile(r'\{\[entity\s*=\s*"((?:[^"\\]|\\.)*)"')
-RE_ENTITY_FILTER = re.compile(r'\[entity\]\s*=\s*"((?:[^"\\]|\\.)*)"')
+
+
+def extract_fields(text):
+    """Scan `text` for every '[field] = value' (Style A) occurrence and every
+    '[field = value, field2 = value2, ...]' record-selector body (Style B,
+    one or more comma-separated field=value pairs in a single bracket - the
+    general M record-literal/selector shape, e.g. `{[Schema = "S", Item =
+    "I"]}`) and return {field_name: [raw_value_tokens...]} for every field
+    name found - not just ones this tool already looks for. Raw tokens are
+    returned as-matched (quotes included if quoted); callers that need a
+    plain string should unquote() the token themselves (see workspace/
+    dataflow/entity usage below), same as before this was generalized."""
+    found = {}
+    for m in RE_FIELD_EQ_A.finditer(text):
+        found.setdefault(m.group(1), []).append(m.group(2))
+    for rm in RE_RECORD_SELECTOR.finditer(text):
+        for m in RE_FIELD_PAIR.finditer(rm.group(1)):
+            found.setdefault(m.group(1), []).append(m.group(2))
+    return found
+
+
+def field_values(text, field_name):
+    return extract_fields(text).get(field_name, [])
+
+
+def first_field_value(text, field_name):
+    """First occurrence of `field_name`, unquoted to a plain string (or None)."""
+    vals = field_values(text, field_name)
+    return unquote(vals[0]) if vals else None
+
+
+def resolve_value_token(token, local_map, universe, global_params=None):
+    """Resolve a raw field-value token (as returned by field_values /
+    extract_fields) to its literal string value: unquote directly if it's a
+    quoted literal, else the token is a bare reference (a local `let`-step
+    variable, a global M parameter, or a separately-named query) - look it
+    up instead of returning the reference name itself. Used for every field
+    (workspaceName/dataflowName/entity/...), since M lets any of them be
+    supplied via a local variable, e.g. `{[entity = Table_Source]}` where
+    `Table_Source = "30217-1_DEMAT_MODEL"` is a step earlier in the same
+    query - the raw token there is the bare word "Table_Source", not the
+    table name, and must be resolved the same way workspace/dataflow tokens
+    already were, or it ends up used verbatim as a bogus entity/dataflow
+    name."""
+    if token is None:
+        return None
+    if token.startswith('"'):
+        return unquote(token)
+    if token in local_map:
+        return local_map[token]
+    if global_params and token in global_params:
+        return global_params[token]
+    return universe.resolve_literal(token)
+
+
+def _local_map_of(text):
+    local_map = {m.group(1): m.group(2) for m in RE_LOCAL_ASSIGN.finditer(text)}
+    local_map.update({m.group(1): m.group(2) for m in RE_LOCAL_ASSIGN_QUOTED.finditer(text)})
+    return local_map
 
 # physical-connector patterns
 RE_ORACLE = re.compile(r'Oracle\.Database\(\s*(#"[^"]+"|"[^"]*"|[A-Za-z_][\w]*)')
-RE_SCHEMA_NAV = re.compile(r'\{\[Schema\s*=\s*"([^"]+)"\]\}')
-RE_NAME_NAV = re.compile(r'\{\[Name\s*=\s*"([^"]+)"\]\}')
-RE_ITEM_NAV = re.compile(r'\{\[Item\s*=\s*"([^"]+)"\]\}')
 
 RE_SHAREPOINT_SITE = re.compile(r'SharePoint\.Files\(\s*(#"[^"]+"|"[^"]*")')
 RE_FOLDER_PATH_FILTER = re.compile(r'\[Folder Path\]\s*=\s*(#"[^"]+"|"[^"]*")')
 RE_TEXT_CONTAINS_FOLDER = re.compile(r'Text\.Contains\(\[Folder Path\],\s*"([^"]+)"\)')
 RE_NAME_FILTER = re.compile(r'\[Name\]\s*=\s*"([^"]+)"')
-RE_SCHEMA_FILTER = re.compile(r'\[Schema\]\s*=\s*"([^"]+)"')
 RE_EXCEL_WORKBOOK = re.compile(r'Excel\.Workbook\(')
 RE_CSV_DOCUMENT = re.compile(r'Csv\.Document\(\s*(#"[^"]+"|"[^"]*"|[A-Za-z_][\w]*)')
 RE_JSON_DOCUMENT = re.compile(r'Json\.Document\(')
@@ -282,37 +349,35 @@ class Universe:
 def analyze_direct_dataflow_bindings(universe: Universe, global_params: dict, guid_cache=None):
     """Find entries in `universe` that directly call the dataflow connector,
     plus 'enumerator' queries (list all dataflows of one workspace with no
-    dataflow-name filter). Returns (direct, enumerators)."""
+    dataflow-name filter). Returns (direct, enumerators, unrecognized), where
+    `unrecognized` is a list of {"query": name, "snippet": ...} entries for
+    queries that call the dataflow connector but whose workspace/dataflow
+    field syntax RE_FIELD_EQ couldn't recognize at all - a signal that a new,
+    not-yet-supported M shape is in use and this tool's regex needs updating,
+    instead of that query silently being treated as if it had no connector."""
     guid_cache = guid_cache or {}
     direct = {}
     enumerators = {}
+    unrecognized = []
 
     for name in universe.names:
         text = universe.get(name) or ""
         if not RE_USES_DATAFLOW_CONNECTOR.search(text):
             continue
-        local_map = {m.group(1): m.group(2) for m in RE_LOCAL_ASSIGN.finditer(text)}
-        local_map.update({m.group(1): m.group(2) for m in RE_LOCAL_ASSIGN_QUOTED.finditer(text)})
-        ws_tokens = RE_WORKSPACE_NAME.findall(text)
-        df_tokens = RE_DATAFLOW_NAME.findall(text)
-        ws_ids = RE_WORKSPACE_ID.findall(text)
-        df_ids = RE_DATAFLOW_ID.findall(text)
-        entity = None
-        m = RE_ENTITY_INDEX.search(text) or RE_ENTITY_FILTER.search(text)
-        if m:
-            entity = m.group(1)
+        fields = extract_fields(text)
+        ws_tokens = fields.get("workspaceName", [])
+        df_tokens = fields.get("dataflowName", [])
+        ws_ids = [unquote(t) for t in fields.get("workspaceId", [])]
+        df_ids = [unquote(t) for t in fields.get("dataflowId", [])]
+        if not (ws_tokens or df_tokens or ws_ids or df_ids):
+            unrecognized.append({"query": name, "snippet": text.strip()[:300]})
+            continue
+        local_map = _local_map_of(text)
+        entity_raw = fields.get("entity", [None])[0]
+        entity = resolve_value_token(entity_raw, local_map, universe, global_params)
 
-        def resolve_tok(tok):
-            if tok.startswith('"'):
-                return unquote(tok)
-            if tok in local_map:
-                return local_map[tok]
-            if tok in global_params:
-                return global_params[tok]
-            return universe.resolve_literal(tok)
-
-        ws_val = resolve_tok(ws_tokens[0]) if ws_tokens else None
-        df_val = resolve_tok(df_tokens[0]) if df_tokens else None
+        ws_val = resolve_value_token(ws_tokens[0], local_map, universe, global_params) if ws_tokens else None
+        df_val = resolve_value_token(df_tokens[0], local_map, universe, global_params) if df_tokens else None
         if not df_val and df_ids and ws_ids and f"{ws_ids[0]}/{df_ids[0]}" in guid_cache:
             df_val = guid_cache[f"{ws_ids[0]}/{df_ids[0]}"]
         if not ws_val and ws_ids:
@@ -330,29 +395,18 @@ def analyze_direct_dataflow_bindings(universe: Universe, global_params: dict, gu
         if name in direct:
             continue
         text = universe.get(name) or ""
-        df_tokens = RE_DATAFLOW_NAME.findall(text)
+        fields = extract_fields(text)
+        df_tokens = fields.get("dataflowName", [])
         if not df_tokens:
             continue
         matched_enum = next((e for e in enumerators if re.search(r'\b' + re.escape(e) + r'\b', text)), None)
         if not matched_enum:
             continue
-        local_map = {m.group(1): m.group(2) for m in RE_LOCAL_ASSIGN.finditer(text)}
-        local_map.update({m.group(1): m.group(2) for m in RE_LOCAL_ASSIGN_QUOTED.finditer(text)})
+        local_map = _local_map_of(text)
 
-        def resolve_tok(tok):
-            if tok.startswith('"'):
-                return unquote(tok)
-            if tok in local_map:
-                return local_map[tok]
-            if tok in global_params:
-                return global_params[tok]
-            return universe.resolve_literal(tok)
-
-        df_val = resolve_tok(df_tokens[0])
-        entity = None
-        m = RE_ENTITY_INDEX.search(text) or RE_ENTITY_FILTER.search(text)
-        if m:
-            entity = m.group(1)
+        df_val = resolve_value_token(df_tokens[0], local_map, universe, global_params)
+        entity_raw = fields.get("entity", [None])[0]
+        entity = resolve_value_token(entity_raw, local_map, universe, global_params)
         if df_val:
             direct[name] = {
                 "workspace": enumerators[matched_enum],
@@ -360,7 +414,7 @@ def analyze_direct_dataflow_bindings(universe: Universe, global_params: dict, gu
                 "entity": entity,
                 "method": f"direct (via enumerator {matched_enum})",
             }
-    return direct, enumerators
+    return direct, enumerators, unrecognized
 
 
 def build_entity_of(universe: Universe):
@@ -376,8 +430,8 @@ def build_entity_of(universe: Universe):
     entity_of = {}
     for name in universe.names:
         text = universe.get(name) or ""
-        m = RE_ENTITY_INDEX.search(text) or RE_ENTITY_FILTER.search(text)
-        entity_of[name] = m.group(1) if m else None
+        entity_raw = field_values(text, "entity")
+        entity_of[name] = resolve_value_token(entity_raw[0], _local_map_of(text), universe) if entity_raw else None
     return entity_of
 
 
@@ -405,6 +459,25 @@ def resolve_pbix_lineage(name, universe, direct, entity_of, cache, visiting):
     visiting.discard(name)
     cache[name] = best
     return best
+
+
+def chain_hits_unrecognized(name, universe, unrecognized_names, visiting=None):
+    """True if `name`'s local M dependency chain passes through a query
+    flagged in `unrecognized_names` (the "unrecognized" list returned by
+    analyze_direct_dataflow_bindings). Lets a report distinguish "this table
+    genuinely doesn't use a dataflow" from "this table's dataflow-connector
+    query uses an M syntax this tool doesn't recognize yet" - both otherwise
+    look identical (an unresolved resolve_pbix_lineage walk)."""
+    if not unrecognized_names:
+        return False
+    visiting = visiting if visiting is not None else set()
+    if name in unrecognized_names:
+        return True
+    if name in visiting:
+        return False
+    visiting.add(name)
+    return any(chain_hits_unrecognized(dep, universe, unrecognized_names, visiting)
+               for dep in universe.ordered_deps(name))
 
 
 # --------------------------------------------------------------------------
@@ -588,23 +661,17 @@ def extract_dataflow_binding_strict(text, universe: Universe, guid_cache=None):
     guid_cache = guid_cache or {}
     if not RE_USES_DATAFLOW_CONNECTOR.search(text):
         return None
-    local_map = {m.group(1): m.group(2) for m in RE_LOCAL_ASSIGN.finditer(text)}
-    local_map.update({m.group(1): m.group(2) for m in RE_LOCAL_ASSIGN_QUOTED.finditer(text)})
-    ws_tokens = RE_WORKSPACE_NAME.findall(text)
-    df_tokens = RE_DATAFLOW_NAME.findall(text)
-    ws_ids = RE_WORKSPACE_ID.findall(text)
-    df_ids = RE_DATAFLOW_ID.findall(text)
-    entity = None
-    m = RE_ENTITY_INDEX.search(text) or RE_ENTITY_FILTER.search(text)
-    if m:
-        entity = m.group(1)
+    local_map = _local_map_of(text)
+    fields = extract_fields(text)
+    ws_tokens = fields.get("workspaceName", [])
+    df_tokens = fields.get("dataflowName", [])
+    ws_ids = [unquote(t) for t in fields.get("workspaceId", [])]
+    df_ids = [unquote(t) for t in fields.get("dataflowId", [])]
+    entity_raw = fields.get("entity", [None])[0]
+    entity = resolve_value_token(entity_raw, local_map, universe)
 
     def resolve_tok(tok):
-        if tok.startswith('"'):
-            return unquote(tok)
-        if tok in local_map:
-            return local_map[tok]
-        return universe.resolve_literal(tok)
+        return resolve_value_token(tok, local_map, universe)
 
     ws_val = resolve_tok(ws_tokens[0]) if ws_tokens else None
     df_val = resolve_tok(df_tokens[0]) if df_tokens else None
@@ -650,21 +717,8 @@ def extract_physical_details(connector_label, text, universe: Universe):
     if connector_label == "Oracle Database":
         m = RE_ORACLE.search(text)
         datamart = universe.resolve_literal(m.group(1)) if m else None
-        schema_m = RE_SCHEMA_NAV.search(text)
-        schema = schema_m.group(1) if schema_m else None
-        name_m = RE_NAME_NAV.search(text) or RE_ITEM_NAV.search(text)
-        table = name_m.group(1) if name_m else None
-        if not table or not schema:
-            # alternate access style: no {[Schema=...]}/{[Name=...]} hierarchical
-            # indexing - instead the table list is flattened via
-            # Table.ExpandTableColumn and then filtered with
-            # `Table.SelectRows(X, each ([Schema] = "S") and ([Name] = "Y"))`.
-            if not table:
-                alt_m = RE_NAME_FILTER.search(text)
-                table = alt_m.group(1) if alt_m else None
-            if not schema:
-                alt_schema_m = RE_SCHEMA_FILTER.search(text)
-                schema = alt_schema_m.group(1) if alt_schema_m else None
+        schema = first_field_value(text, "Schema")
+        table = first_field_value(text, "Item") or first_field_value(text, "Name")
         details.update({
             "datamart": datamart,
             "schema": schema,
@@ -681,7 +735,7 @@ def extract_physical_details(connector_label, text, universe: Universe):
             tc_m = RE_TEXT_CONTAINS_FOLDER.search(text)
             folder = tc_m.group(1) if tc_m else None
         name_m = RE_NAME_FILTER.search(text)
-        file_name = name_m.group(1) if name_m else None
+        file_name = name_m.group(1) if name_m else first_field_value(text, "Name")
         web_m = RE_WEB_CONTENTS.search(text)
         if not file_name and web_m:
             url = web_m.group(1)
@@ -724,10 +778,8 @@ def resolve_within_universe(name, universe: Universe, stem, dataflows=None, enti
 
     my_entity = entity_of.get(name)
     effective_entity = my_entity or inherited_entity
-    name_filter_m = RE_NAME_FILTER.search(text)
-    effective_table = (name_filter_m.group(1) if name_filter_m else None) or inherited_table
-    schema_filter_m = RE_SCHEMA_NAV.search(text) or RE_SCHEMA_FILTER.search(text)
-    effective_schema = (schema_filter_m.group(1) if schema_filter_m else None) or inherited_schema
+    effective_table = first_field_value(text, "Name") or inherited_table
+    effective_schema = first_field_value(text, "Schema") or inherited_schema
 
     members = extract_table_combine_members(text)
     if members:

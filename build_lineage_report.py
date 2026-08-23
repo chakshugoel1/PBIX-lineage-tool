@@ -58,7 +58,7 @@ def load_everything(pbix_path=None, dataflow_folder=None):
     pbix_universe = ll.Universe(entries)
     global_params = pbix_universe.build_global_param_values()
     guid_cache = ll.load_guid_cache()
-    direct, enumerators = ll.analyze_direct_dataflow_bindings(pbix_universe, global_params, guid_cache)
+    direct, enumerators, unrecognized = ll.analyze_direct_dataflow_bindings(pbix_universe, global_params, guid_cache)
     entity_of = ll.build_entity_of(pbix_universe)
 
     dataflows = ll.load_dataflows(dataflow_folder)
@@ -75,6 +75,7 @@ def load_everything(pbix_path=None, dataflow_folder=None):
         "pbix_universe": pbix_universe,
         "direct": direct,
         "enumerators": enumerators,
+        "unrecognized_dataflow_patterns": unrecognized,
         "entity_of": entity_of,
         "dataflows": dataflows,
         "entity_index": entity_index,
@@ -239,14 +240,23 @@ def _resolve_table_row_inner(table, ctx):
     cache = {}
     lvl1 = ll.resolve_pbix_lineage(table, ctx["pbix_universe"], ctx["direct"], ctx["entity_of"], cache, set())
     if lvl1 is None:
-        tag = ll.classify_unresolved_reason("No dataflow-connector ancestor found")
+        unrecognized_names = {u["query"] for u in ctx.get("unrecognized_dataflow_patterns", [])}
+        if ll.chain_hits_unrecognized(table, ctx["pbix_universe"], unrecognized_names):
+            tag = "UNRECOGNIZED CONNECTOR SYNTAX"
+            reason_text = ("A dataflow-connector call was found in this table's local M dependency "
+                           "chain, but its workspace/dataflow field syntax isn't recognized by this "
+                           "tool's regex yet - see the 'unrecognized dataflow pattern(s)' console "
+                           "warning printed for this run.")
+        else:
+            tag = ll.classify_unresolved_reason("No dataflow-connector ancestor found")
+            reason_text = "No dataflow-connector ancestor found in local M dependency chain."
         return {
             "status": "unresolved",
             "entities_used": f"Entity Name: {table}",
             "level1": None, "level2": None, "final_source": None,
             "folder": None, "file": None,
             "remarks": "\n".join(filter(None, [union_note,
-                f"[NEEDS MANUAL OVERRIDE - {tag}] No dataflow-connector ancestor found in local M dependency chain."])),
+                f"[NEEDS MANUAL OVERRIDE - {tag}] {reason_text}"])),
             "dataflow_stems": set(),
             "needs_override": True, "override_tag": tag,
             "phys": None, "lvl1_raw": None, "entity": None,
@@ -479,6 +489,17 @@ def write_workbook(rows, ctx, output_path=None):
 
     wb.save(output_path)
     print(f"Saved: {output_path}")
+
+    unrecognized = ctx.get("unrecognized_dataflow_patterns") or []
+    if unrecognized:
+        print(f"WARNING: {len(unrecognized)} quer(y/ies) call a dataflow connector "
+              "(PowerPlatform.Dataflows/Dataflows.Contents/PowerBI.Dataflows) using an M syntax "
+              "this tool doesn't recognize - affected rows are tagged 'UNRECOGNIZED CONNECTOR "
+              "SYNTAX' instead of being resolved. lineage_lib.py's extract_fields() (RE_FIELD_EQ_A / "
+              "RE_RECORD_SELECTOR) needs a new style added for:")
+        for u in unrecognized:
+            print(f"  - {u['query']}: {u['snippet'][:120]}")
+
     print(f"Total rows: {len(rows)}")
     found = sum(1 for i in rows if i["status"] == "found")
     unresolved = sum(1 for i in rows if i["status"] == "unresolved")

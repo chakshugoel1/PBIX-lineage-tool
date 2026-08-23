@@ -17,7 +17,7 @@ for _, row in model.m_parameters.iterrows():
 
 pbix_universe = ll.Universe(entries)
 global_params = pbix_universe.build_global_param_values()
-direct, enumerators = ll.analyze_direct_dataflow_bindings(pbix_universe, global_params)
+direct, enumerators, unrecognized = ll.analyze_direct_dataflow_bindings(pbix_universe, global_params)
 
 print("Direct dataflow bindings found in PBIX:", len(direct))
 print("Enumerators found in PBIX:", len(enumerators), list(enumerators.keys()))

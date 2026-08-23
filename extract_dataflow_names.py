@@ -33,12 +33,13 @@ try:
 except ImportError:
     sys.exit("Missing dependency. Install with:  pip install pbixray")
 
+import lineage_lib as ll
+
 # --- regex patterns -----------------------------------------------------
-RE_WORKSPACE_NAME = re.compile(r'\[workspaceName\]\s*=\s*("(?:[^"\\]|\\.)*"|[A-Za-z_][A-Za-z0-9_\-]*)')
-RE_DATAFLOW_NAME = re.compile(r'\[dataflowName\]\s*=\s*("(?:[^"\\]|\\.)*"|[A-Za-z_][A-Za-z0-9_\-]*)')
-RE_WORKSPACE_ID = re.compile(r'\[workspaceId\s*=\s*"([^"]+)"\]')
-RE_DATAFLOW_ID = re.compile(r'\[dataflowId\s*=\s*"([^"]+)"\]')
-RE_USES_DATAFLOW_CONNECTOR = re.compile(r'PowerPlatform\.Dataflows|Dataflows\.Contents')
+# workspaceName/dataflowName/workspaceId/dataflowId extraction and the
+# connector-call detector live in lineage_lib.py (ll.field_values /
+# ll.RE_USES_DATAFLOW_CONNECTOR) so this standalone script can't drift out of
+# sync with the main pipeline's parsing logic, as it previously did.
 RE_LOCAL_ASSIGN = re.compile(r'\b([A-Za-z_][A-Za-z0-9_\-]*)\s*=\s*"((?:[^"\\]|\\.)*)"')
 RE_SIMPLE_QUOTED = re.compile(r'^"((?:[^"\\]|\\.)*)"')
 
@@ -94,14 +95,14 @@ def extract(pbix_path: str):
         if expr is None:
             continue
         text = str(expr)
-        if not RE_USES_DATAFLOW_CONNECTOR.search(text):
+        if not ll.RE_USES_DATAFLOW_CONNECTOR.search(text):
             continue
 
         local_map = {m.group(1): m.group(2) for m in RE_LOCAL_ASSIGN.finditer(text)}
-        ws_tokens = RE_WORKSPACE_NAME.findall(text)
-        df_tokens = RE_DATAFLOW_NAME.findall(text)
-        ws_ids = RE_WORKSPACE_ID.findall(text)
-        df_ids = RE_DATAFLOW_ID.findall(text)
+        ws_tokens = ll.field_values(text, "workspaceName")
+        df_tokens = ll.field_values(text, "dataflowName")
+        ws_ids = [ll.unquote(t) for t in ll.field_values(text, "workspaceId")]
+        df_ids = [ll.unquote(t) for t in ll.field_values(text, "dataflowId")]
         direct_hits.append((source_kind, name, text, local_map, ws_tokens, df_tokens, ws_ids, df_ids))
 
         if ws_tokens and not df_tokens and not ws_ids and not df_ids:
@@ -149,7 +150,7 @@ def extract(pbix_path: str):
         if expr is None or name in direct_names:
             continue
         text = str(expr)
-        df_tokens = RE_DATAFLOW_NAME.findall(text)
+        df_tokens = ll.field_values(text, "dataflowName")
         if not df_tokens:
             continue
         matched_enum = next((e for e in enumerators if re.search(r'\b' + re.escape(e) + r'\b', text)), None)
