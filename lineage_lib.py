@@ -82,7 +82,7 @@ def classify_unresolved_reason(reason):
 
 # --------------------------------------------------------------------------
 # Shared regex patterns (workspace/dataflow/entity resolution) - adapted
-# from extract_dataflow_names.py / extract_table_dataflow_lineage.py
+# from legacy_cli.py's original standalone scripts
 # --------------------------------------------------------------------------
 RE_USES_DATAFLOW_CONNECTOR = re.compile(r'PowerPlatform\.Dataflows|Dataflows\.Contents|PowerBI\.Dataflows')
 
