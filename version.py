@@ -2,4 +2,4 @@
 the PyInstaller build, the Inno Setup installer, and the auto-updater's
 comparison against GitHub release tags (which must be "v" + this value,
 e.g. "v1.0.0")."""
-__version__ = "1.1.1"
+__version__ = "1.1.2"
