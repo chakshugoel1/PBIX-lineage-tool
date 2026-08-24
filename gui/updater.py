@@ -9,10 +9,11 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import subprocess
 UPDATE_COMMAND_TIMEOUT = 300
+APP_USER_MODEL_ID = "chakshugoel1.PBIXLineageTool"
 
 
 def refresh_shortcut_icon(app_dir):
-    """Point the Start Menu shortcut at the installed application icon."""
+    """Keep the Start Menu shortcut icon and taskbar identity in sync."""
     icon_path = os.path.join(app_dir, "Icon.ico")
     if not os.path.isfile(icon_path):
         return False
@@ -27,6 +28,13 @@ def refresh_shortcut_icon(app_dir):
         shortcut = shell.CreateShortcut(shortcut_path)
         shortcut.IconLocation = f"{icon_path},0"
         shortcut.Save()
+
+        from win32com.propsys import propsys, pscon
+        store = propsys.SHGetPropertyStoreFromParsingName(
+            shortcut_path, None, 2, propsys.IID_IPropertyStore  # GPS_READWRITE
+        )
+        store.SetValue(pscon.PKEY_AppUserModel_ID, propsys.PROPVARIANTType(APP_USER_MODEL_ID))
+        store.Commit()
         return True
     except Exception:
         return False

@@ -6,6 +6,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from gui.main_window import main
+from gui import updater
 
 
 def _configure_windows_app_identity():
@@ -13,7 +14,7 @@ def _configure_windows_app_identity():
         return
     try:
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("chakshugoel1.PBIXLineageTool")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(updater.APP_USER_MODEL_ID)
     except Exception:
         pass
 
@@ -40,4 +41,5 @@ def _configure_runtime_diagnostics():
 if __name__ == "__main__":
     _configure_windows_app_identity()
     _configure_runtime_diagnostics()
+    updater.refresh_shortcut_icon(os.path.dirname(os.path.abspath(__file__)))
     main()
