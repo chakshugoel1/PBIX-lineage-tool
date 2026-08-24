@@ -44,11 +44,15 @@ def powerbi_service_url(workspace_id, dataflow_id):
     return f"https://app.powerbi.com/groups/{workspace_id}/dataflows/{dataflow_id}"
 
 
-GUID_CACHE_PATH = os.path.join(os.path.dirname(__file__), "guid_dataflow_names.json")
+GUID_CACHE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "guid_dataflow_names.json")
 
 
 def load_guid_cache(path=None):
-    """Load a {"workspaceId/dataflowId": "Dataflow Name"} lookup used to
+    """Load GUID lookup entries used to resolve dataflow references.
+
+    Legacy entries use ``{"workspaceId/dataflowId": "Dataflow Name"}``.
+    Rich entries may additionally provide ``workspace_name`` and
+    ``dataflow_name``. Both formats remain supported.
     resolve GUID-only dataflow references (ReferenceEntity `modelId`, or
     M-code `[workspaceId]`/`[dataflowId]` filters with no literal name
     alongside them) into a friendly name, since app.powerbi.com requires an
@@ -63,6 +67,20 @@ def load_guid_cache(path=None):
     except Exception:
         return {}
     return {k: v for k, v in raw.items() if v}
+
+
+def guid_cache_dataflow_name(guid_cache, key):
+    """Return the friendly dataflow name from either supported cache shape."""
+    value = (guid_cache or {}).get(key)
+    if isinstance(value, dict):
+        return value.get("dataflow_name") or value.get("name")
+    return value
+
+
+def guid_cache_workspace_name(guid_cache, key):
+    """Return an optional workspace display name from a rich cache entry."""
+    value = (guid_cache or {}).get(key)
+    return value.get("workspace_name") if isinstance(value, dict) else None
 
 def classify_unresolved_reason(reason):
     """Map a free-text 'unresolved'/failure reason string to a short,
@@ -404,15 +422,22 @@ def analyze_direct_dataflow_bindings(universe: Universe, global_params: dict, gu
 
         ws_val = resolve_value_token(ws_tokens[0], local_map, universe, global_params) if ws_tokens else None
         df_val = resolve_value_token(df_tokens[0], local_map, universe, global_params) if df_tokens else None
-        if not df_val and df_ids and ws_ids and f"{ws_ids[0]}/{df_ids[0]}" in guid_cache:
-            df_val = guid_cache[f"{ws_ids[0]}/{df_ids[0]}"]
+        cache_key = f"{ws_ids[0]}/{df_ids[0]}" if ws_ids and df_ids else None
+        if not df_val and cache_key:
+            df_val = guid_cache_dataflow_name(guid_cache, cache_key)
+        if not ws_val and cache_key:
+            ws_val = guid_cache_workspace_name(guid_cache, cache_key)
         if not ws_val and ws_ids:
             ws_val = f"(workspaceId GUID) {ws_ids[0]}"
         if not df_val and df_ids:
             df_val = f"(dataflowId GUID) {df_ids[0]}"
 
         if df_val:
-            direct[name] = {"workspace": ws_val, "dataflow": df_val, "entity": entity, "method": "direct"}
+            direct[name] = {
+                "workspace": ws_val, "workspace_id": ws_ids[0] if ws_ids else None,
+                "dataflow": df_val, "dataflow_id": df_ids[0] if df_ids else None,
+                "entity": entity, "method": "direct",
+            }
         elif ws_val and not df_tokens and not df_ids:
             enumerators[name] = ws_val
 
@@ -435,8 +460,9 @@ def analyze_direct_dataflow_bindings(universe: Universe, global_params: dict, gu
         entity = resolve_value_token(entity_raw, local_map, universe, global_params)
         if df_val:
             direct[name] = {
-                "workspace": enumerators[matched_enum],
+                "workspace": enumerators[matched_enum], "workspace_id": None,
                 "dataflow": df_val,
+                "dataflow_id": None,
                 "entity": entity,
                 "method": f"direct (via enumerator {matched_enum})",
             }
@@ -730,7 +756,8 @@ def extract_dataflow_binding_strict(text, universe: Universe, guid_cache=None):
     if not df_val and df_ids and ws_ids:
         cache_key = f"{ws_ids[0]}/{df_ids[0]}"
         if cache_key in guid_cache:
-            df_val = guid_cache[cache_key]
+            df_val = guid_cache_dataflow_name(guid_cache, cache_key)
+            ws_val = ws_val or guid_cache_workspace_name(guid_cache, cache_key)
             logger.debug(f"GUID cache hit: {cache_key} -> '{df_val}'")
         else:
             logger.debug(f"GUID cache miss: {cache_key} not in cache")
@@ -741,7 +768,11 @@ def extract_dataflow_binding_strict(text, universe: Universe, guid_cache=None):
         df_val = f"(dataflowId GUID) {df_ids[0]}"
     if not df_val:
         return None
-    return {"workspace": ws_val, "dataflow": df_val, "entity": entity}
+    return {
+        "workspace": ws_val, "workspace_id": ws_ids[0] if ws_ids else None,
+        "dataflow": df_val, "dataflow_id": df_ids[0] if df_ids else None,
+        "entity": entity,
+    }
 
 
 def pick_best_candidate(candidates, from_stem, entity_name):
@@ -954,7 +985,7 @@ def resolve_physical_source(stem, entity_name, dataflows, entity_index, name_ind
             # fetch). If we know the name AND that dataflow is among the
             # provided files, jump straight to it.
             model_id = entity_meta.get("modelId", "")
-            resolved_name = guid_cache.get(model_id) if "/" in model_id else None
+            resolved_name = guid_cache_dataflow_name(guid_cache, model_id) if "/" in model_id else None
             if resolved_name and name_index and resolved_name in name_index:
                 target_stem = name_index[resolved_name]
                 hops = hops + [{"level": "level2-guid", "stem": target_stem, "entity": entity_name,
@@ -977,6 +1008,13 @@ def resolve_physical_source(stem, entity_name, dataflows, entity_index, name_ind
                 "unresolved": True,
                 "reason": reason,
                 "hops": hops,
+                "access_request": {
+                    "workspace_id": ws_id if "/" in model_id else None,
+                    "workspace": guid_cache_workspace_name(guid_cache, model_id) if "/" in model_id else None,
+                    "dataflow_id": df_id if "/" in model_id else None,
+                    "dataflow": resolved_name,
+                    "entity": entity_name,
+                },
             }
         chosen, ambiguous = pick_best_candidate(candidates, stem, entity_name)
         hops = hops + [{"level": "level2", "stem": chosen, "entity": entity_name, "ambiguous": ambiguous,

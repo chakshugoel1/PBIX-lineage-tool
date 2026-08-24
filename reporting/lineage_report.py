@@ -47,6 +47,7 @@ M_QUERY_REFERENCE_REVIEW_REASON = (
     "determined reliably from this query. Review the M query and confirm the intended workspace, "
     "dataflow, and entity."
 )
+ACCESS_REQUIRED_TAG = "ACCESS REQUIRED - DATAFLOW NOT AVAILABLE"
 
 
 def _safe_column_set(df, col):
@@ -67,6 +68,44 @@ def _status_text(info):
     if info["status"] == "no_query":
         return "No M/Power Query Source"
     return "No Access"
+
+
+def _access_request_from_level1(level1, entity):
+    """Build normalized access details from a PBIX dataflow binding."""
+    if not level1:
+        return None
+    workspace = level1.get("workspace")
+    dataflow = level1.get("dataflow")
+    if workspace and workspace.startswith("(workspaceId GUID)"):
+        workspace = None
+    if dataflow and dataflow.startswith("(dataflowId GUID)"):
+        dataflow = None
+    return {
+        "workspace": workspace,
+        "workspace_id": level1.get("workspace_id"),
+        "dataflow": dataflow,
+        "dataflow_id": level1.get("dataflow_id"),
+        "entity": entity,
+    }
+
+
+def _format_access_request(access_request):
+    """Explain exactly what Power BI workspace/dataflow access is needed."""
+    if not access_request:
+        return None
+    lines = [f"[NEEDS MANUAL REVIEW - {ACCESS_REQUIRED_TAG}]"]
+    if access_request.get("workspace"):
+        lines.append(f"Workspace: {access_request['workspace']}")
+    if access_request.get("workspace_id"):
+        lines.append(f"Workspace ID: {access_request['workspace_id']}")
+    if access_request.get("dataflow"):
+        lines.append(f"Dataflow: {access_request['dataflow']}")
+    if access_request.get("dataflow_id"):
+        lines.append(f"Dataflow ID: {access_request['dataflow_id']}")
+    if access_request.get("entity"):
+        lines.append(f"Entity: {access_request['entity']}")
+    lines.append("Request access to this Power BI workspace, export the referenced dataflow JSON, and rerun the lineage report.")
+    return "\n".join(lines)
 
 
 def _autofit_main_sheet_columns(ws):
@@ -322,8 +361,14 @@ def _resolve_table_row_inner(table, ctx):
     dataflow_stems = _collect_dataflow_stems(lvl1, phys, ctx["dataflows"])
 
     if phys.get("unresolved"):
-        tag = ll.classify_unresolved_reason(phys.get("reason"))
-        remarks = f"[NEEDS MANUAL REVIEW - {tag}] {phys.get('reason', 'Unresolved.')}"
+        access_request = None
+        if lvl1["dataflow"] not in ctx["dataflows"]:
+            access_request = _access_request_from_level1(lvl1, entity)
+        elif phys.get("access_request"):
+            access_request = phys["access_request"]
+        tag = ACCESS_REQUIRED_TAG if access_request else ll.classify_unresolved_reason(phys.get("reason"))
+        remarks = _format_access_request(access_request) if access_request else \
+            f"[NEEDS MANUAL REVIEW - {tag}] {phys.get('reason', 'Unresolved.')}"
         return {
             "status": "unresolved",
             "entities_used": entities_used,
@@ -332,6 +377,7 @@ def _resolve_table_row_inner(table, ctx):
             "remarks": "\n".join(filter(None, [union_note, remarks])),
             "dataflow_stems": dataflow_stems,
             "needs_override": True, "override_tag": tag,
+            "access_request": access_request,
             "phys": phys, "lvl1_raw": lvl1, "entity": entity,
         }
 
