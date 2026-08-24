@@ -124,6 +124,7 @@ $shortcut = $wsh.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $pythonw
 $shortcut.Arguments = '"app.py"'
 $shortcut.WorkingDirectory = $AppDir
+$shortcut.IconLocation = "$AppDir\Icon.ico,0"
 $shortcut.Save()
 
 Write-Host ""

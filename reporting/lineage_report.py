@@ -437,10 +437,8 @@ def write_workbook(rows, ctx, output_path=None):
         cell.fill = HEADER_FILL
         cell.font = Font(bold=True)
 
-    ws.cell(row=2, column=1, value=f"Report: {_report_name_from_pbix(ctx.get('pbix_path'))}\nDownloaded: WKS DTF FINANCE")
-    ws.cell(row=2, column=1).alignment = WRAP
-
-    r = 3
+    report_name = f"Report: {_report_name_from_pbix(ctx.get('pbix_path'))}\nDownloaded: WKS DTF FINANCE"
+    r = 2
     dataflows_used_l1 = set()
     dataflows_used_l2 = set()
     unused_tables = []
@@ -449,6 +447,7 @@ def write_workbook(rows, ctx, output_path=None):
         for c in range(1, 10):
             ws.cell(row=r, column=c).alignment = WRAP
 
+        ws.cell(row=r, column=1, value=report_name)
         ws.cell(row=r, column=2, value=_status_text(info))
         ws.cell(row=r, column=3, value=info["remarks"])
         ws.cell(row=r, column=4, value=info["entities_used"])

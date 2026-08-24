@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QHeaderView, QTableWidgetItem,
     QScrollArea, QApplication,
@@ -24,6 +24,8 @@ from gui import settings as app_settings
 from gui.worker import PipelineWorker, UpdateWorker, UpdateCheckWorker, DataflowExportWorker
 from gui import updater
 from version import __version__
+
+_APP_ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Icon.png")
 
 STATUS_CARD_COLORS = {
     "Resolved": "#C6E0B4",
@@ -511,6 +513,8 @@ class MainWindow(FluentWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"PBIX Lineage Tool  v{__version__}")
+        if os.path.isfile(_APP_ICON_PATH):
+            self.setWindowIcon(QIcon(_APP_ICON_PATH))
         self._size_to_screen()
 
         self.home_interface = HomeInterface(self)
@@ -593,6 +597,8 @@ def main():
     setTheme(Theme.DARK if cfg.get("theme", "dark") == "dark" else Theme.LIGHT)
 
     app = QApplication(sys.argv)
+    if os.path.isfile(_APP_ICON_PATH):
+        app.setWindowIcon(QIcon(_APP_ICON_PATH))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

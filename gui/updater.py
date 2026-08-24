@@ -11,6 +11,27 @@ import subprocess
 UPDATE_COMMAND_TIMEOUT = 300
 
 
+def refresh_shortcut_icon(app_dir):
+    """Point the Start Menu shortcut at the installed application icon."""
+    icon_path = os.path.join(app_dir, "Icon.ico")
+    if not os.path.isfile(icon_path):
+        return False
+    try:
+        from win32com.client import Dispatch
+
+        start_menu = os.environ.get("APPDATA")
+        if not start_menu:
+            return False
+        shortcut_path = os.path.join(start_menu, "Microsoft", "Windows", "Start Menu", "Programs", "PBIX Lineage Tool.lnk")
+        shell = Dispatch("WScript.Shell")
+        shortcut = shell.CreateShortcut(shortcut_path)
+        shortcut.IconLocation = f"{icon_path},0"
+        shortcut.Save()
+        return True
+    except Exception:
+        return False
+
+
 def check_for_update(timeout=5):
     """Returns whether the installed main branch is behind origin/main."""
     app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -83,6 +104,7 @@ def run_update(progress_cb=None):
             suffix = "" if rollback.returncode == 0 else " Rollback also failed; reinstall from Install.cmd."
             return False, f"Dependency install failed; previous code was restored:\n{result.stderr}{suffix}"
 
+        refresh_shortcut_icon(app_dir)
         return True, "Update complete. Please restart the app for changes to take effect."
     except subprocess.TimeoutExpired as e:
         return False, f"Update timed out while running {e.cmd[0] if e.cmd else 'a command'}. Try again later."
