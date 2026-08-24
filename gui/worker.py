@@ -12,11 +12,10 @@ import traceback
 
 from PySide6.QtCore import QThread, Signal
 
-import build_lineage_report as blr
-import build_dataflow_table_lineage_report as dtlr
 import config
-import dataflow_export
-import fileutils
+from reporting import lineage_report as blr
+from reporting import dataflow_table_report as dtlr
+from services import dataflow_export, fileutils
 from gui import updater
 
 logger = logging.getLogger(__name__)

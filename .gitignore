@@ -20,6 +20,7 @@ Dataflow_Table_Lineage_Report_*.xlsx
 Final_Source_Comparison_*.xlsx
 Final_Source_Comparison_*_backup.xlsx
 Review_Transformations_Real_Data.xlsx
+~$*.xlsx
 guid_dataflow_names.json
 PowerBIDataflows/
 _validation_output.txt

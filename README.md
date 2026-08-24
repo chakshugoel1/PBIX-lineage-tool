@@ -220,18 +220,27 @@ the Home tab's reports), never silently overwritten in place.
    have access to — you should see a clear `workspace`-stage error instead
    of a crash.
 
-## Project files
+## Project layout
 
-| File | Purpose |
+| Folder or file | Purpose |
 |---|---|
-| `config.py` | All machine/project-specific input & output paths |
-| `lineage_lib.py` | Core M-code parsing / multi-level resolution engine |
-| `build_lineage_report.py` | Runs the pipeline end-to-end; writes `Generated_<pbix name>_Lineage.xlsx` and (via `build_dataflow_table_lineage_report.py`) `Dataflow_Table_Lineage_Report_<pbix name>.xlsx` |
-| `build_dataflow_table_lineage_report.py` | Writes the companion `Dataflow_Table_Lineage_Report_<pbix name>.xlsx` (Overview + Table Lineage sheets); can also be run standalone |
-| `compare_final_source_table.py` | Optional/legacy: compares the generated report against a target/reference workbook |
-| `validate_report.py` | Older validation script (superseded by `compare_final_source_table.py`) |
-| `fileutils.py` | Shared file helpers (archive-before-overwrite, filename sanitizing) used by both the report pipeline and the dataflow export feature |
-| `dataflow_export.py` | Isolated feature: batch-exports every dataflow in a workspace to `.json` via `powershell/Export-AllDataflows.ps1` (see "Dataflow Data Export" above) |
-| `requirements.txt` | Pinned dependency versions |
-| `requirements-dev.txt` | Dev-only dependencies (currently just `pytest`, for `tests/`) |
-| `setup.ps1` | One-command environment setup |
+| `app.py` | Desktop application entry point used by the Start Menu shortcut |
+| `config.py` | User-editable machine/project-specific input and output paths |
+| `gui/` | Desktop UI, worker threads, settings, and in-app updater |
+| `core/` | M-code parsing and multi-level lineage resolution engine |
+| `reporting/` | Main lineage, companion lineage, transformation, and comparison workbook generation |
+| `services/` | Shared file operations and PowerShell dataflow export integration |
+| `cli/` | Standalone inspection command-line interface |
+| `powershell/` | PowerShell scripts invoked by Python services |
+| `tests/` | Automated tests and pytest configuration |
+| `tools/` | Developer diagnostics and manual inspection utilities |
+| `docs/` | Engineering review and implementation notes |
+| `requirements.txt` | Pinned runtime dependencies |
+| `requirements-dev.txt` | Development-only dependencies |
+| `setup.ps1` | One-command developer environment setup |
+
+The root-level scripts `build_lineage_report.py`,
+`build_dataflow_table_lineage_report.py`, `compare_final_source_table.py`,
+and `legacy_cli.py` are retained as compatibility entry points. Existing
+commands and installer behavior therefore continue to work while the actual
+implementation lives in the folders above.

@@ -8,32 +8,29 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import subprocess
-import requests
-from version import __version__
-
-GITHUB_OWNER = "chakshugoel1"
-GITHUB_REPO = "PBIX-lineage-tool"
 UPDATE_COMMAND_TIMEOUT = 300
 
 
-def _parse_version(tag):
-    return tuple(int(p) for p in tag.lstrip("v").split("."))
-
-
 def check_for_update(timeout=5):
-    """Returns (has_update, latest_tag, error)."""
-    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+    """Returns whether the installed main branch is behind origin/main."""
+    app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     try:
-        resp = requests.get(url, timeout=timeout, headers={"Accept": "application/vnd.github+json"})
-        resp.raise_for_status()
-        data = resp.json()
-        latest_tag = data.get("tag_name", "")
-        if not latest_tag:
-            return False, None, "No releases found."
-        has_update = _parse_version(latest_tag) > _parse_version("v" + __version__)
-        return has_update, latest_tag, None
-    except Exception as e:
-        return False, None, str(e)
+        local = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=app_dir,
+            capture_output=True, text=True, check=True, timeout=timeout,
+        ).stdout.strip()
+        remote = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", "main"], cwd=app_dir,
+            capture_output=True, text=True, check=True, timeout=timeout,
+        ).stdout.strip().split()
+        if not remote:
+            return False, None, "Could not find the remote main branch."
+        remote_head = remote[0]
+        return local != remote_head, f"main @ {remote_head[:7]}", None
+    except subprocess.TimeoutExpired:
+        return False, None, "Timed out while checking the remote repository."
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        return False, None, f"Could not check Git updates: {e}"
 
 
 def run_update(progress_cb=None):

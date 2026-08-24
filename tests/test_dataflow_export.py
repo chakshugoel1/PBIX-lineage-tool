@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-import dataflow_export
+from services import dataflow_export
 
 
 class FakeProc:
