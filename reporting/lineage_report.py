@@ -37,13 +37,50 @@ GREY_FILL = PatternFill(start_color="FFD9D9D9", end_color="FFD9D9D9", fill_type=
 YELLOW_FILL = PatternFill(start_color="FFFFFF00", end_color="FFFFFF00", fill_type="solid")
 WRAP = Alignment(wrap_text=True, vertical="top")
 
-HEADERS = ["Color Codes", "Report Name", "Entities Used across report", "Source  - Level1",
-           "Source - Level 2", "Final Source", "Folder PATH", "File Name", "Remarks"]
+HEADERS = ["Report Name", "Status", "Remarks", "Entities Used across report",
+           "Source - Level 1", "Source - Level 2", "Final Source", "Folder PATH", "File Name"]
+
+M_QUERY_REFERENCE_REVIEW_TAG = "M QUERY REFERENCE NOT EXPLICIT"
+M_QUERY_REFERENCE_REVIEW_REASON = (
+    "The M query contains a dataflow connector, but its workspace or dataflow reference is "
+    "dynamically constructed, indirect, or not explicitly stated. The lineage source cannot be "
+    "determined reliably from this query. Review the M query and confirm the intended workspace, "
+    "dataflow, and entity."
+)
 
 
 def _safe_column_set(df, col):
     # pbixray returns a columnless DataFrame (not just 0 rows) when a table (e.g. measures) is absent from the PBIX.
     return set(df[col]) if col in df.columns else set()
+
+
+def _status_text(info):
+    """Business-facing status used by the main report."""
+    if not info["is_used"]:
+        return "Tables not used in PBIX"
+    if info.get("hard_unresolved"):
+        return "No Access"
+    if info.get("needs_override"):
+        return "Needs Manual Review"
+    if info["status"] == "found":
+        return "Found Source [Automatically]"
+    if info["status"] == "no_query":
+        return "No M/Power Query Source"
+    return "No Access"
+
+
+def _autofit_main_sheet_columns(ws):
+    """Fit main-report columns to content without allowing long notes to dominate the sheet."""
+    limits = {
+        "A": (28, 45), "B": (20, 32), "C": (24, 60), "D": (28, 50),
+        "E": (28, 50), "F": (28, 50), "G": (28, 50), "H": (20, 40), "I": (18, 35),
+    }
+    for column, (minimum, maximum) in limits.items():
+        longest_line = max(
+            (len(line) for cell in ws[column] for line in str(cell.value or "").splitlines()),
+            default=minimum,
+        )
+        ws.column_dimensions[column].width = max(minimum, min(maximum, longest_line + 2))
 
 
 def load_everything(pbix_path=None, dataflow_folder=None):
@@ -121,7 +158,7 @@ def format_final_source(phys):
         if phys.get("schema"):
             lines.append(f'Schema = "{phys["schema"]}"')
         else:
-            lines.append("Schema = ??? (MISSING - requires manual override)")
+            lines.append("Schema = ??? (MISSING - requires manual review)")
         if phys.get("table"):
             lines.append(f'Item = "{phys["table"]}"')
         return "\n".join(lines) if lines else None, None, None
@@ -177,7 +214,7 @@ def _apply_duplicate_notices(row, ctx):
     if not notices:
         return
     parts = [
-        f"[NEEDS MANUAL OVERRIDE - DUPLICATE DATAFLOW DETECTED] Multiple exports of "
+        f"[NEEDS MANUAL REVIEW - DUPLICATE DATAFLOW DETECTED] Multiple exports of "
         f"'{n['base_name']}' were found with differing content ({', '.join(n['files'])}) - "
         f"automatically selected the latest ('{n['chosen_file']}', modified {n['chosen_modified']}). "
         f"Please verify manually."
@@ -230,7 +267,7 @@ def _resolve_table_row_inner(table, ctx):
         if all(m in entries for m in members):
             m = ll.RE_TABLE_COMBINE.search(expr)
             raw_snippet = m.group(0) if m else expr[:300]
-            remarks = ("[NEEDS MANUAL OVERRIDE - MULTI-SOURCE UNION] combines "
+            remarks = ("[NEEDS MANUAL REVIEW - MULTI-SOURCE UNION] combines "
                        f"{len(members)} independent top-level sources with no single primary "
                        f"source - manual review required to confirm intended reporting source: "
                        f"{', '.join(members)}\n{raw_snippet}")
@@ -255,11 +292,8 @@ def _resolve_table_row_inner(table, ctx):
     if lvl1 is None:
         unrecognized_names = {u["query"] for u in ctx.get("unrecognized_dataflow_patterns", [])}
         if ll.chain_hits_unrecognized(table, ctx["pbix_universe"], unrecognized_names):
-            tag = "UNRECOGNIZED CONNECTOR SYNTAX"
-            reason_text = ("A dataflow-connector call was found in this table's local M dependency "
-                           "chain, but its workspace/dataflow field syntax isn't recognized by this "
-                           "tool's regex yet - see the 'unrecognized dataflow pattern(s)' console "
-                           "warning printed for this run.")
+            tag = M_QUERY_REFERENCE_REVIEW_TAG
+            reason_text = M_QUERY_REFERENCE_REVIEW_REASON
         else:
             tag = ll.classify_unresolved_reason("No dataflow-connector ancestor found")
             reason_text = "No dataflow-connector ancestor found in local M dependency chain."
@@ -269,7 +303,7 @@ def _resolve_table_row_inner(table, ctx):
             "level1": None, "level2": None, "final_source": None,
             "folder": None, "file": None,
             "remarks": "\n".join(filter(None, [union_note,
-                f"[NEEDS MANUAL OVERRIDE - {tag}] {reason_text}"])),
+                f"[NEEDS MANUAL REVIEW - {tag}] {reason_text}"])),
             "dataflow_stems": set(),
             "needs_override": True, "override_tag": tag,
             "phys": None, "lvl1_raw": None, "entity": None,
@@ -289,7 +323,7 @@ def _resolve_table_row_inner(table, ctx):
 
     if phys.get("unresolved"):
         tag = ll.classify_unresolved_reason(phys.get("reason"))
-        remarks = f"[NEEDS MANUAL OVERRIDE - {tag}] {phys.get('reason', 'Unresolved.')}"
+        remarks = f"[NEEDS MANUAL REVIEW - {tag}] {phys.get('reason', 'Unresolved.')}"
         return {
             "status": "unresolved",
             "entities_used": entities_used,
@@ -303,7 +337,7 @@ def _resolve_table_row_inner(table, ctx):
 
     if phys.get("union"):
         members_desc = phys.get("raw", "")[:300]
-        remarks = ("[NEEDS MANUAL OVERRIDE - MULTI-SOURCE UNION (DATAFLOW LEVEL)] entity "
+        remarks = ("[NEEDS MANUAL REVIEW - MULTI-SOURCE UNION (DATAFLOW LEVEL)] entity "
                    f"'{entity}' combines {len(phys.get('members', []))} sources within the "
                    f"dataflow's own M code - manual review required: {members_desc}")
         return {
@@ -332,16 +366,16 @@ def _resolve_table_row_inner(table, ctx):
 
     schema_note = None
     if phys.get("connector") == "Oracle Database" and not phys.get("schema"):
-        schema_note = ("[NEEDS MANUAL OVERRIDE - MISSING SCHEMA] Schema not specified anywhere in the "
+        schema_note = ("[NEEDS MANUAL REVIEW - MISSING SCHEMA] Schema not specified anywhere in the "
                        "source dataflow's M-code for this table - cannot be auto-extracted; please "
                        "confirm the correct schema manually.")
 
     override_tags = []
     if union_note:
-        union_note = "[NEEDS MANUAL OVERRIDE - UNION WITH LOCAL PATCH TABLE] " + union_note.lstrip("[").rstrip("]")
+        union_note = "[NEEDS MANUAL REVIEW - UNION WITH LOCAL PATCH TABLE] " + union_note.lstrip("[").rstrip("]")
         override_tags.append("UNION WITH LOCAL PATCH TABLE")
     if ambiguous_note.strip():
-        ambiguous_note = ("[NEEDS MANUAL OVERRIDE - AMBIGUOUS ENTITY MATCH] " +
+        ambiguous_note = ("[NEEDS MANUAL REVIEW - AMBIGUOUS ENTITY MATCH] " +
                           ambiguous_note.strip().lstrip("[").rstrip("]") + " Please confirm correct source.")
         override_tags.append("AMBIGUOUS ENTITY MATCH")
     if schema_note:
@@ -403,17 +437,10 @@ def write_workbook(rows, ctx, output_path=None):
         cell.fill = HEADER_FILL
         cell.font = Font(bold=True)
 
-    ws.cell(row=2, column=1, value="Found Source")
-    ws.cell(row=2, column=1).fill = GREEN_FILL
-    ws.cell(row=3, column=1, value="Unresolved / No Source Found")
-    ws.cell(row=3, column=1).fill = GREY_FILL
-    ws.cell(row=4, column=1, value="Tables not used")
-    ws.cell(row=4, column=1).fill = RED_FILL
-    ws.cell(row=5, column=1, value="Needs Manual Override (source found, please confirm)")
-    ws.cell(row=5, column=1).fill = YELLOW_FILL
-    ws.cell(row=2, column=2, value=f"Report: {_report_name_from_pbix(ctx.get('pbix_path'))}\nDownloaded: WKS DTF FINANCE")
+    ws.cell(row=2, column=1, value=f"Report: {_report_name_from_pbix(ctx.get('pbix_path'))}\nDownloaded: WKS DTF FINANCE")
+    ws.cell(row=2, column=1).alignment = WRAP
 
-    r = 6
+    r = 3
     dataflows_used_l1 = set()
     dataflows_used_l2 = set()
     unused_tables = []
@@ -422,13 +449,14 @@ def write_workbook(rows, ctx, output_path=None):
         for c in range(1, 10):
             ws.cell(row=r, column=c).alignment = WRAP
 
-        ws.cell(row=r, column=3, value=info["entities_used"])
-        ws.cell(row=r, column=4, value=info["level1"])
-        ws.cell(row=r, column=5, value=info["level2"])
-        ws.cell(row=r, column=6, value=info["final_source"])
-        ws.cell(row=r, column=7, value=info["folder"])
-        ws.cell(row=r, column=8, value=info["file"])
-        ws.cell(row=r, column=9, value=info["remarks"])
+        ws.cell(row=r, column=2, value=_status_text(info))
+        ws.cell(row=r, column=3, value=info["remarks"])
+        ws.cell(row=r, column=4, value=info["entities_used"])
+        ws.cell(row=r, column=5, value=info["level1"])
+        ws.cell(row=r, column=6, value=info["level2"])
+        ws.cell(row=r, column=7, value=info["final_source"])
+        ws.cell(row=r, column=8, value=info["folder"])
+        ws.cell(row=r, column=9, value=info["file"])
 
         if not info["is_used"]:
             fill = RED_FILL
@@ -445,7 +473,7 @@ def write_workbook(rows, ctx, output_path=None):
             fill = GREY_FILL
 
         if fill:
-            for c in range(3, 7):
+            for c in (2, 4):
                 ws.cell(row=r, column=c).fill = fill
 
         if info["level1"]:
@@ -455,14 +483,7 @@ def write_workbook(rows, ctx, output_path=None):
 
         r += 1
 
-    ws.column_dimensions["B"].width = 30
-    ws.column_dimensions["C"].width = 40
-    ws.column_dimensions["D"].width = 40
-    ws.column_dimensions["E"].width = 45
-    ws.column_dimensions["F"].width = 35
-    ws.column_dimensions["G"].width = 35
-    ws.column_dimensions["H"].width = 25
-    ws.column_dimensions["I"].width = 45
+    _autofit_main_sheet_columns(ws)
 
     ws2 = wb.create_sheet("Dataflows used")
     ws2.cell(row=1, column=1, value="Level 1 - Dataflows").font = Font(bold=True)
@@ -519,11 +540,9 @@ def write_workbook(rows, ctx, output_path=None):
 
     unrecognized = ctx.get("unrecognized_dataflow_patterns") or []
     if unrecognized:
-        print(f"WARNING: {len(unrecognized)} quer(y/ies) call a dataflow connector "
-              "(PowerPlatform.Dataflows/Dataflows.Contents/PowerBI.Dataflows) using an M syntax "
-              "this tool doesn't recognize - affected rows are tagged 'UNRECOGNIZED CONNECTOR "
-              "SYNTAX' instead of being resolved. lineage_lib.py's extract_fields() (RE_FIELD_EQ_A / "
-              "RE_RECORD_SELECTOR) needs a new style added for:")
+        print(f"WARNING: {len(unrecognized)} quer(y/ies) contain a dataflow connector with a workspace "
+              "or dataflow reference that is dynamically constructed, indirect, or not explicitly stated. "
+              f"Affected rows are tagged '{M_QUERY_REFERENCE_REVIEW_TAG}' and require M-query review:")
         for u in unrecognized:
             print(f"  - {u['query']}: {u['snippet'][:120]}")
 
@@ -539,7 +558,7 @@ def write_workbook(rows, ctx, output_path=None):
 
     needs_override = sum(1 for i in rows if i.get("needs_override") and not i.get("hard_unresolved"))
     hard_unresolved = sum(1 for i in rows if i.get("hard_unresolved"))
-    print(f"  needs_manual_override (soft - source found, please confirm)={needs_override} "
+    print(f"  needs_manual_review (soft - source found, please confirm)={needs_override} "
           f"({needs_override / len(rows):.1%} of total)")
     print(f"  hard_unresolved (no source found at all)={hard_unresolved} ({hard_unresolved / len(rows):.1%} of total)")
     tag_counts = Counter(i["override_tag"] for i in rows if i.get("needs_override") and not i.get("hard_unresolved"))

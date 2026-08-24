@@ -132,6 +132,19 @@ class UpdateWorker(QThread):
             self.failed.emit(f"Update failed: {e}")
 
 
+class UpdateCheckWorker(QThread):
+    """Checks the installed main branch without blocking the desktop UI."""
+    checked = Signal(bool, str, str)
+
+    def run(self):
+        try:
+            has_update, revision, error = updater.check_for_update()
+            self.checked.emit(has_update, revision or "", error or "")
+        except Exception as e:
+            logger.exception("Update check worker failed")
+            self.checked.emit(False, "", f"Could not check for updates: {e}")
+
+
 class DataflowExportWorker(QThread):
     """Runs dataflow_export.py (which shells out to
     powershell/Export-AllDataflows.ps1) on a background thread so the UI

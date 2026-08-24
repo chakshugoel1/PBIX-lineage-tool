@@ -66,7 +66,7 @@ def load_guid_cache(path=None):
 
 def classify_unresolved_reason(reason):
     """Map a free-text 'unresolved'/failure reason string to a short,
-    consistent issue-type tag, used to make every NEEDS MANUAL OVERRIDE flag
+    consistent issue-type tag, used to make every NEEDS MANUAL REVIEW flag
     say *why* in a scannable, consistent way (instead of just "unresolved")."""
     r = (reason or "").lower()
     if "not found among the provided files" in r or "dataflow file for" in r:

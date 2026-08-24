@@ -11,7 +11,7 @@ resolution logic).
 There is no target/reference workbook involved: this report is meant to be
 authoritative on its own. Anything the engine cannot resolve with full
 confidence (dataflow not found, ambiguous match, missing schema, multi-source
-union, etc.) is flagged in the "Status" column as NEEDS MANUAL OVERRIDE, with
+union, etc.) is flagged in the "Status" column as NEEDS MANUAL REVIEW, with
 the specific issue type named in "Unresolved Reason" and the row highlighted
 yellow - instead of being silently left blank or compared against a target.
 
@@ -102,7 +102,7 @@ def build_row(table, ctx):
     if status == "union" and info.get("union_members_raw") is not None:
         members = info["union_members_raw"]
         descs = [f"{m} -> {_short_source_desc(resolve_member_source(m, ctx))}" for m in members]
-        row["status_label"] = "NEEDS MANUAL OVERRIDE"
+        row["status_label"] = "NEEDS MANUAL REVIEW"
         row["primary_source"] = "Union of multiple sources"
         row["union_members"] = "; ".join(descs)
         row["resolution_method"] = "Table.Combine union of independent top-level queries (no single dominant physical source)"
@@ -116,7 +116,7 @@ def build_row(table, ctx):
     if status == "union" and info.get("phys") is not None:
         lvl1, entity, phys = info["lvl1_raw"], info["entity"], info["phys"]
         members = phys.get("members", [])
-        row["status_label"] = "NEEDS MANUAL OVERRIDE"
+        row["status_label"] = "NEEDS MANUAL REVIEW"
         row["primary_source"] = "Union of multiple sources"
         row["union_members"] = "; ".join(f"{name} -> {_short_source_desc(sub)}" for name, sub in members)
         row["resolution_method"] = f"{lvl1.get('method', '')}; Table.Combine union within dataflow-level query '{entity}'"
@@ -128,7 +128,7 @@ def build_row(table, ctx):
         return row
 
     if status == "unresolved":
-        row["status_label"] = "NEEDS MANUAL OVERRIDE"
+        row["status_label"] = "NEEDS MANUAL REVIEW"
         lvl1 = info.get("lvl1_raw")
         if lvl1:
             reason = (info.get("phys") or {}).get("reason", "Unresolved.")
@@ -144,7 +144,7 @@ def build_row(table, ctx):
     # status == "found"
     lvl1, entity, phys = info["lvl1_raw"], info["entity"], info["phys"]
     connector = phys.get("connector")
-    row["status_label"] = "NEEDS MANUAL OVERRIDE" if row["needs_override"] else "Resolved"
+    row["status_label"] = "NEEDS MANUAL REVIEW" if row["needs_override"] else "Resolved"
     row["primary_source"] = connector
     row["resolution_method"] = lvl1.get("method")
 
@@ -191,10 +191,10 @@ def write_overview_sheet(wb, rows):
     ws.cell(row=r, column=3, value=len(rows))
     r += 1
     status_counts = Counter(row["status_label"] for row in rows)
-    for label in ("Resolved", "Calculated", "NEEDS MANUAL OVERRIDE"):
+    for label in ("Resolved", "Calculated", "NEEDS MANUAL REVIEW"):
         ws.cell(row=r, column=2, value=f"{label}:")
         ws.cell(row=r, column=3, value=status_counts.get(label, 0))
-        if label == "NEEDS MANUAL OVERRIDE":
+        if label == "NEEDS MANUAL REVIEW":
             ws.cell(row=r, column=2).fill = YELLOW_FILL
             ws.cell(row=r, column=3).fill = YELLOW_FILL
         r += 1
@@ -212,7 +212,7 @@ def write_overview_sheet(wb, rows):
         r += 1
 
     r += 1
-    ws.cell(row=r, column=2, value="NEEDS MANUAL OVERRIDE - by issue type:").font = Font(bold=True)
+    ws.cell(row=r, column=2, value="NEEDS MANUAL REVIEW - by issue type:").font = Font(bold=True)
     r += 1
     tag_counts = Counter(row["override_tag"] for row in rows if row.get("needs_override"))
     for tag, cnt in tag_counts.most_common():

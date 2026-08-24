@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QHeaderView, QTableWidgetItem,
@@ -21,13 +21,13 @@ from qfluentwidgets import (
 )
 
 from gui import settings as app_settings
-from gui.worker import PipelineWorker, UpdateWorker, DataflowExportWorker
+from gui.worker import PipelineWorker, UpdateWorker, UpdateCheckWorker, DataflowExportWorker
 from gui import updater
 from version import __version__
 
 STATUS_CARD_COLORS = {
     "Resolved": "#C6E0B4",
-    "Needs Manual Override": "#FFF200",
+    "Needs Manual Review": "#FFF200",
     "Unresolved": "#D9D9D9",
     "Calculated": "#D9D9D9",
 }
@@ -132,7 +132,7 @@ class HomeInterface(QWidget):
         root.addWidget(StrongBodyLabel("2. Results", self))
         cards_row = QHBoxLayout()
         self.resolved_card = StatusCard("Resolved", STATUS_CARD_COLORS["Resolved"], self)
-        self.override_card = StatusCard("Needs Manual Override", STATUS_CARD_COLORS["Needs Manual Override"], self)
+        self.override_card = StatusCard("Needs Manual Review", STATUS_CARD_COLORS["Needs Manual Review"], self)
         self.unresolved_card = StatusCard("Unresolved", STATUS_CARD_COLORS["Unresolved"], self)
         self.calculated_card = StatusCard("Calculated", STATUS_CARD_COLORS["Calculated"], self)
         cards_row.addWidget(self.resolved_card)
@@ -157,7 +157,7 @@ class HomeInterface(QWidget):
         actions_row.addStretch(1)
         root.addLayout(actions_row)
 
-        root.addWidget(BodyLabel("Rows flagged NEEDS MANUAL OVERRIDE:", self))
+        root.addWidget(BodyLabel("Rows flagged NEEDS MANUAL REVIEW:", self))
         self.flagged_table = TableWidget(self)
         self.flagged_table.setColumnCount(3)
         self.flagged_table.setHorizontalHeaderLabels(["Table", "Issue Type", "Remarks"])
@@ -272,7 +272,7 @@ class HomeInterface(QWidget):
             self.flagged_table.setItem(r, 2, QTableWidgetItem(row["remarks"]))
 
         InfoBar.success("Run complete",
-                         f"{summary['found']} resolved, {summary['needs_override']} need manual override, "
+                         f"{summary['found']} resolved, {summary['needs_override']} need manual review, "
                          f"{summary['hard_unresolved']} unresolved.",
                          parent=self, position=InfoBarPosition.TOP, duration=4000)
 
@@ -459,6 +459,8 @@ class AboutInterface(QWidget):
 
         layout.addStretch(1)
         self.update_worker = None
+        self.update_check_worker = None
+        QTimer.singleShot(1000, self._start_update_check)
 
     def _on_theme_changed(self, checked):
         setTheme(Theme.DARK if checked else Theme.LIGHT)
@@ -467,17 +469,26 @@ class AboutInterface(QWidget):
         app_settings.save(cfg)
 
     def _on_check_update(self):
+        self._start_update_check()
+
+    def _start_update_check(self):
+        if self.update_check_worker is not None and self.update_check_worker.isRunning():
+            return
         self.update_button.setEnabled(False)
         self.update_status.setText("Checking for updates...")
-        has_update, latest_tag, error = updater.check_for_update()
+        self.update_check_worker = UpdateCheckWorker(self)
+        self.update_check_worker.checked.connect(self._on_update_check_finished)
+        self.update_check_worker.start()
+
+    def _on_update_check_finished(self, has_update, revision, error):
         if error:
             self.update_status.setText(f"Could not check for updates: {error}")
             self.update_button.setEnabled(True)
         elif not has_update:
-            self.update_status.setText(f"You're up to date (latest: {latest_tag or __version__}).")
+            self.update_status.setText(f"You're up to date ({revision or 'main'}).")
             self.update_button.setEnabled(True)
         else:
-            self.update_status.setText(f"Update available: {latest_tag}. Updating...")
+            self.update_status.setText(f"Update available: {revision}. Updating...")
             self.update_worker = UpdateWorker(self)
             self.update_worker.progress.connect(self.update_status.setText)
             self.update_worker.finished_ok.connect(self._on_update_finished)
@@ -485,8 +496,8 @@ class AboutInterface(QWidget):
             self.update_worker.start()
 
     def _on_update_finished(self, message):
-        self.update_status.setText(message)
-        self.update_button.setEnabled(True)
+        self.update_status.setText(f"{message} Restarting with the updated version...")
+        QTimer.singleShot(750, self.window().restart_after_update)
 
     def _on_update_failed(self, message):
         self.update_status.setText(message)
@@ -539,6 +550,15 @@ class MainWindow(FluentWindow):
         )
         if not box.exec():
             return
+
+        self._restart_application()
+
+    def restart_after_update(self):
+        """Restart without a prompt after the updater safely replaces application files."""
+        self._restart_application()
+
+    def _restart_application(self):
+        """Stop workers and relaunch a fully detached application process."""
 
         for worker in (self.home_interface.worker, self.dataflow_export_interface.worker):
             if worker is not None and worker.isRunning():
