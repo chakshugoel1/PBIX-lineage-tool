@@ -25,7 +25,7 @@ from gui.worker import PipelineWorker, UpdateWorker, UpdateCheckWorker, Dataflow
 from gui import updater
 from version import __version__
 
-_APP_ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Icon.png")
+_APP_ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Icon.ico")
 
 STATUS_CARD_COLORS = {
     "Resolved": "#C6E0B4",

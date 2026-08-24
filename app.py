@@ -8,6 +8,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gui.main_window import main
 
 
+def _configure_windows_app_identity():
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("chakshugoel1.PBIXLineageTool")
+    except Exception:
+        pass
+
+
 def _configure_runtime_diagnostics():
     log_dir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.dirname(__file__)), "PBIXLineageTool", "logs")
     os.makedirs(log_dir, exist_ok=True)
@@ -28,5 +38,6 @@ def _configure_runtime_diagnostics():
     sys.excepthook = handle_exception
 
 if __name__ == "__main__":
+    _configure_windows_app_identity()
     _configure_runtime_diagnostics()
     main()
