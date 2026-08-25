@@ -209,7 +209,21 @@ def format_final_source(phys):
             lines.append(f"SP = {phys['site']}")
         final = "\n".join(lines) if lines else None
         return final, phys.get("folder"), phys.get("file")
-    if connector in ("Csv Document", "Web Contents"):
+    if connector == "Web Contents":
+        lines = []
+        lines.append(f"System = {phys.get('source_system') or 'REST API'}")
+        if phys.get("host"):
+            lines.append(f"Host = {phys['host']}")
+        if phys.get("relative_path"):
+            lines.append(f"Endpoint = {phys['relative_path']}")
+        elif phys.get("endpoint"):
+            lines.append(f"Endpoint = {phys['endpoint']}")
+        if phys.get("resource"):
+            lines.append(f"Resource = {phys['resource']}")
+        if phys.get("parser"):
+            lines.append(f"Parser = {phys['parser']}")
+        return "\n".join(lines), phys.get("host"), phys.get("resource")
+    if connector == "Csv Document":
         lines = []
         if phys.get("file"):
             lines.append(f"File Name = {phys['file']}")

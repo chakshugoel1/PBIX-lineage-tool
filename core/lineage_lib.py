@@ -30,6 +30,7 @@ import logging
 import os
 import re
 import time
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,7 @@ RE_EXCEL_WORKBOOK = re.compile(r'Excel\.Workbook\s*\(')
 RE_CSV_DOCUMENT = re.compile(r'Csv\.Document\s*\(\s*(?://[^\n]*\n\s*)*(#"[^"]+"|"[^"]*"|[A-Za-z_][\w]*)', re.MULTILINE)
 RE_JSON_DOCUMENT = re.compile(r'Json\.Document\s*\(')
 RE_WEB_CONTENTS = re.compile(r'Web\.Contents\s*\(\s*"([^"]+)"')
+RE_WEB_RELATIVE_PATH = re.compile(r'RelativePath\s*=\s*"([^"]+)"')
 
 RE_TABLE_COMBINE = re.compile(r'Table\.Combine\(\s*\{(.*?)\}\s*\)', re.DOTALL)
 RE_SOURCE_STEP = re.compile(r'\bSource\s*=\s*(#"[^"]+"|[A-Za-z_][\w]*)\s*[,\n]')
@@ -220,8 +222,9 @@ CONNECTOR_ORDER = [
     ("SharePoint Excel/CSV", re.compile(r'SharePoint\.Files\(')),
     ("Excel Workbook", re.compile(r'Excel\.Workbook\(')),
     ("Csv Document", re.compile(r'Csv\.Document\(')),
-    ("Json Document", re.compile(r'Json\.Document\(')),
     ("Web Contents", re.compile(r'Web\.Contents\(')),
+    # Parsers are only sources of last resort; prefer the transport they wrap.
+    ("Json Document", re.compile(r'Json\.Document\(')),
 ]
 
 
@@ -842,8 +845,22 @@ def extract_physical_details(connector_label, text, universe: Universe):
 
     if connector_label == "Web Contents":
         m = RE_WEB_CONTENTS.search(text)
-        url = m.group(1) if m else None
-        details.update({"file": url.rsplit("/", 1)[-1] if url else None, "folder": url.rsplit("/", 1)[0] if url else None})
+        host = m.group(1).rstrip("/") if m else None
+        relative_match = RE_WEB_RELATIVE_PATH.search(text)
+        relative_path = relative_match.group(1) if relative_match else ""
+        endpoint = f"{host}/{relative_path.lstrip('/')}" if host and relative_path else host
+        parsed = urlsplit(endpoint or "")
+        resource = parsed.path.rstrip("/").rsplit("/", 1)[-1] or None
+        details.update({
+            "host": host,
+            "relative_path": relative_path or None,
+            "endpoint": endpoint,
+            "resource": resource,
+            "source_system": "ServiceNow" if parsed.hostname and parsed.hostname.endswith(".service-now.com") else "REST API",
+            "file": resource,
+            "folder": host,
+            "parser": "Json Document" if RE_JSON_DOCUMENT.search(text) else None,
+        })
         return details
 
     return details
