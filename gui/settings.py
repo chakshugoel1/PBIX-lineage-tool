@@ -15,6 +15,9 @@ DEFAULTS = {
     "theme": "dark",
     "dataflow_workspace_id": "",
     "dataflow_output_dir": "",
+    "model_change_baseline_pbix": "",
+    "model_change_changed_pbix": "",
+    "model_change_output_folder": "",
 }
 
 

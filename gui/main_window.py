@@ -21,9 +21,10 @@ from qfluentwidgets import (
 )
 
 from gui import settings as app_settings
-from gui.worker import PipelineWorker, UpdateWorker, UpdateCheckWorker, DataflowExportWorker
+from gui.worker import PipelineWorker, UpdateWorker, UpdateCheckWorker, DataflowExportWorker, ModelChangeImpactWorker
 from gui import updater
 from version import __version__
+import config
 
 _APP_ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Icon.ico")
 
@@ -428,6 +429,217 @@ class DataflowExportInterface(QWidget):
         InfoBar.error("Export failed", message, parent=self, position=InfoBarPosition.TOP, duration=10000)
 
 
+class ModelChangeImpactInterface(QWidget):
+    """Compares a baseline .pbix against a changed .pbix and produces an
+    Excel change-impact report (model_change_impact/*). Kept as its own tab/
+    package so it cannot interfere with the existing V1 lineage pipeline
+    above."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ModelChangeImpactInterface")
+        self.worker = None
+
+        cfg = app_settings.load()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget(self)
+        scroll.setWidget(content)
+        root = QVBoxLayout(content)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(14)
+
+        root.addWidget(TitleLabel("Model Change Impact", self))
+        root.addWidget(BodyLabel(
+            "Compares a baseline .pbix against a changed .pbix and reports every "
+            "table/column/measure/relationship change, plus which report pages and "
+            "visuals (including KPI cards) are affected.", self))
+
+        inputs_card = CardWidget(self)
+        inputs_layout = QVBoxLayout(inputs_card)
+        inputs_layout.setContentsMargins(16, 16, 16, 16)
+        inputs_layout.addWidget(StrongBodyLabel("1. Select Files", self))
+
+        self.baseline_edit = LineEdit(self)
+        self.baseline_edit.setText(cfg["model_change_baseline_pbix"])
+        self.baseline_edit.setPlaceholderText("Path to the baseline (before) .pbix file")
+        inputs_layout.addLayout(self._row("Baseline PBIX:", self.baseline_edit, self._browse_baseline))
+
+        self.changed_edit = LineEdit(self)
+        self.changed_edit.setText(cfg["model_change_changed_pbix"])
+        self.changed_edit.setPlaceholderText("Path to the changed (after) .pbix file")
+        inputs_layout.addLayout(self._row("Changed PBIX:", self.changed_edit, self._browse_changed))
+
+        self.output_edit = LineEdit(self)
+        self.output_edit.setText(cfg["model_change_output_folder"])
+        self.output_edit.setPlaceholderText("Defaults to the changed PBIX file's folder")
+        inputs_layout.addLayout(self._row("Output folder:", self.output_edit, self._browse_output))
+
+        root.addWidget(inputs_card)
+
+        run_row = QHBoxLayout()
+        self.analyze_button = PrimaryPushButton(FIF.SEARCH_MIRROR, "Analyze Changes", self)
+        self.analyze_button.clicked.connect(self._on_analyze_clicked)
+        run_row.addWidget(self.analyze_button)
+        run_row.addStretch(1)
+        self.toggle_log_button = PushButton("Show Log", self)
+        self.toggle_log_button.clicked.connect(self._toggle_log)
+        run_row.addWidget(self.toggle_log_button)
+        root.addLayout(run_row)
+
+        self.progress_bar = IndeterminateProgressBar(self)
+        self.progress_bar.setVisible(False)
+        root.addWidget(self.progress_bar)
+
+        self.log_view = TextEdit(self)
+        self.log_view.setReadOnly(True)
+        self.log_view.setFixedHeight(160)
+        self.log_view.setVisible(False)
+        root.addWidget(self.log_view)
+
+        root.addWidget(StrongBodyLabel("2. Results", self))
+        cards_row = QHBoxLayout()
+        self.tables_card = StatusCard("Tables Changed", "#D9D9D9", self)
+        self.measures_card = StatusCard("Measures Changed", "#D9D9D9", self)
+        self.columns_card = StatusCard("Columns Changed", "#D9D9D9", self)
+        self.relationships_card = StatusCard("Relationships Changed", "#D9D9D9", self)
+        self.visuals_card = StatusCard("Visuals Impacted", "#FFF200", self)
+        cards_row.addWidget(self.tables_card)
+        cards_row.addWidget(self.measures_card)
+        cards_row.addWidget(self.columns_card)
+        cards_row.addWidget(self.relationships_card)
+        cards_row.addWidget(self.visuals_card)
+        root.addLayout(cards_row)
+
+        actions_row = QHBoxLayout()
+        self.open_report_button = PushButton(FIF.DOCUMENT, "Open Excel Report", self)
+        self.open_report_button.clicked.connect(lambda: self._open_file(self._last_output_path))
+        self.open_report_button.setEnabled(False)
+        self.open_folder_button = PushButton(FIF.FOLDER, "Open Output Folder", self)
+        self.open_folder_button.clicked.connect(self._open_output_folder)
+        self.open_folder_button.setEnabled(False)
+        actions_row.addWidget(self.open_report_button)
+        actions_row.addWidget(self.open_folder_button)
+        actions_row.addStretch(1)
+        root.addLayout(actions_row)
+        root.addStretch(1)
+
+        self._last_output_path = None
+
+    def _row(self, label_text, line_edit, browse_slot=None):
+        row = QHBoxLayout()
+        row.addWidget(BodyLabel(label_text, self), stretch=0)
+        row.addWidget(line_edit, stretch=1)
+        if browse_slot:
+            btn = PushButton(FIF.FOLDER, "Browse", self)
+            btn.clicked.connect(browse_slot)
+            row.addWidget(btn, stretch=0)
+        return row
+
+    def _browse_baseline(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select baseline PBIX file", "", "Power BI Files (*.pbix)")
+        if path:
+            self.baseline_edit.setText(path)
+
+    def _browse_changed(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select changed PBIX file", "", "Power BI Files (*.pbix)")
+        if path:
+            self.changed_edit.setText(path)
+            if not self.output_edit.text().strip():
+                self.output_edit.setText(os.path.dirname(path))
+
+    def _browse_output(self):
+        path = QFileDialog.getExistingDirectory(self, "Select output folder")
+        if path:
+            self.output_edit.setText(path)
+
+    def _toggle_log(self):
+        visible = not self.log_view.isVisible()
+        self.log_view.setVisible(visible)
+        self.toggle_log_button.setText("Hide Log" if visible else "Show Log")
+
+    def _on_analyze_clicked(self):
+        baseline_path = self.baseline_edit.text().strip()
+        changed_path = self.changed_edit.text().strip()
+        output_folder = self.output_edit.text().strip() or (os.path.dirname(changed_path) if changed_path else "")
+
+        if not baseline_path or not os.path.isfile(baseline_path):
+            InfoBar.error("Missing baseline PBIX", "Please select a valid baseline .pbix file.", parent=self,
+                          position=InfoBarPosition.TOP)
+            return
+        if not changed_path or not os.path.isfile(changed_path):
+            InfoBar.error("Missing changed PBIX", "Please select a valid changed .pbix file.", parent=self,
+                          position=InfoBarPosition.TOP)
+            return
+        if not output_folder or not os.path.isdir(output_folder):
+            InfoBar.error("Missing output folder", "Please select a valid output folder.", parent=self,
+                          position=InfoBarPosition.TOP)
+            return
+
+        app_settings.save({
+            **app_settings.load(),
+            "model_change_baseline_pbix": baseline_path,
+            "model_change_changed_pbix": changed_path,
+            "model_change_output_folder": output_folder,
+        })
+
+        baseline_stem = config.pbix_stem(baseline_path)
+        changed_stem = config.pbix_stem(changed_path)
+        output_path = os.path.join(output_folder, f"Model_Change_Impact_{baseline_stem}_to_{changed_stem}.xlsx")
+
+        self.analyze_button.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.log_view.clear()
+        self.open_report_button.setEnabled(False)
+        self.open_folder_button.setEnabled(False)
+
+        self.worker = ModelChangeImpactWorker(baseline_path, changed_path, output_path)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished_ok.connect(self._on_finished)
+        self.worker.failed.connect(self._on_failed)
+        self.worker.start()
+
+    def _on_progress(self, line):
+        self.log_view.append(line)
+
+    def _on_finished(self, summary):
+        self.analyze_button.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self._last_output_path = summary["output_path"]
+        self.open_report_button.setEnabled(True)
+        self.open_folder_button.setEnabled(True)
+
+        self.tables_card.set_value(summary["tables"]["changed"])
+        self.measures_card.set_value(summary["measures"]["changed"])
+        self.columns_card.set_value(summary["columns"]["changed"])
+        self.relationships_card.set_value(summary["relationships"]["changed"])
+        self.visuals_card.set_value(summary["impacted_visuals"])
+
+        InfoBar.success("Analysis complete",
+                         f"{summary['impacted_visuals']} visual(s) impacted. Report saved to "
+                         f"{os.path.basename(summary['output_path'])}.",
+                         parent=self, position=InfoBarPosition.TOP, duration=5000)
+
+    def _on_failed(self, message):
+        self.analyze_button.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        InfoBar.error("Analysis failed", message, parent=self, position=InfoBarPosition.TOP, duration=8000)
+
+    def _open_file(self, path):
+        if path and os.path.exists(path):
+            os.startfile(path)
+
+    def _open_output_folder(self):
+        output_folder = self.output_edit.text().strip()
+        if output_folder and os.path.isdir(output_folder):
+            os.startfile(output_folder)
+
+
 class AboutInterface(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -523,10 +735,12 @@ class MainWindow(FluentWindow):
 
         self.home_interface = HomeInterface(self)
         self.dataflow_export_interface = DataflowExportInterface(self)
+        self.model_change_impact_interface = ModelChangeImpactInterface(self)
         self.about_interface = AboutInterface(self)
 
         self.addSubInterface(self.home_interface, FIF.HOME, "Run")
         self.addSubInterface(self.dataflow_export_interface, FIF.CLOUD_DOWNLOAD, "Dataflow Export")
+        self.addSubInterface(self.model_change_impact_interface, FIF.SEARCH_MIRROR, "Model Change Impact")
         self.addSubInterface(self.about_interface, FIF.INFO, "About", NavigationItemPosition.BOTTOM)
 
     def _size_to_screen(self):
@@ -568,7 +782,11 @@ class MainWindow(FluentWindow):
     def _restart_application(self):
         """Stop workers and relaunch a fully detached application process."""
 
-        for worker in (self.home_interface.worker, self.dataflow_export_interface.worker):
+        for worker in (
+            self.home_interface.worker,
+            self.dataflow_export_interface.worker,
+            self.model_change_impact_interface.worker,
+        ):
             if worker is not None and worker.isRunning():
                 if hasattr(worker, "request_cancel"):
                     worker.request_cancel()

@@ -17,6 +17,7 @@ from reporting import lineage_report as blr
 from reporting import dataflow_table_report as dtlr
 from services import dataflow_export, fileutils
 from gui import updater
+from model_change_impact import snapshot, report_layout, diff, impact, excel_report
 
 logger = logging.getLogger(__name__)
 
@@ -186,3 +187,84 @@ class DataflowExportWorker(QThread):
         for proc in self.proc_holder:
             if proc.poll() is None:
                 proc.kill()
+
+
+class ModelChangeImpactWorker(QThread):
+    """Runs the V2 model_change_impact pipeline (snapshot -> report_layout ->
+    diff -> impact -> excel_report) on a background thread so the UI stays
+    responsive. Entirely separate from the V1 PipelineWorker above - shares
+    no state or code path with the existing lineage engine."""
+    progress = Signal(str)
+    finished_ok = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(self, baseline_path, changed_path, output_path, parent=None):
+        super().__init__(parent)
+        self.baseline_path = baseline_path
+        self.changed_path = changed_path
+        self.output_path = output_path
+        self.cancel_event = threading.Event()
+
+    def request_cancel(self):
+        self.cancel_event.set()
+
+    def run(self):
+        try:
+            self.progress.emit("Reading baseline model...")
+            baseline_snapshot = snapshot.build_snapshot(self.baseline_path)
+            if self.cancel_event.is_set():
+                raise RuntimeError("Analysis cancelled.")
+
+            self.progress.emit("Reading changed model...")
+            changed_snapshot = snapshot.build_snapshot(self.changed_path)
+            if self.cancel_event.is_set():
+                raise RuntimeError("Analysis cancelled.")
+
+            self.progress.emit("Reading changed report's visuals/pages...")
+            changed_layout = report_layout.build_report_layout(self.changed_path)
+            if self.cancel_event.is_set():
+                raise RuntimeError("Analysis cancelled.")
+
+            self.progress.emit("Comparing models...")
+            diff_result = diff.diff_snapshots(baseline_snapshot, changed_snapshot)
+            if self.cancel_event.is_set():
+                raise RuntimeError("Analysis cancelled.")
+
+            self.progress.emit("Analyzing downstream impact on visuals...")
+            impact_result = impact.analyze_impact(baseline_snapshot, changed_snapshot, diff_result, changed_layout)
+            if self.cancel_event.is_set():
+                raise RuntimeError("Analysis cancelled.")
+
+            self.progress.emit("Writing Excel report...")
+            excel_report.build_excel_report(
+                baseline_snapshot, changed_snapshot, diff_result, impact_result, changed_layout, self.output_path,
+            )
+
+            def _count(section):
+                return {k: (v if k == "unchanged_count" else len(v)) for k, v in section.items()}
+
+            summary = {
+                "output_path": self.output_path,
+                "tables": _count(diff_result["tables"]),
+                "columns": _count(diff_result["columns"]),
+                "measures": _count(diff_result["measures"]),
+                "relationships": _count(diff_result["relationships"]),
+                "impacted_visuals": len({
+                    (v["page_id"], v["visual_id"])
+                    for section in impact_result.values()
+                    for row in section
+                    for v in row["impacted_visuals"]
+                }),
+            }
+        except PermissionError as e:
+            self.failed.emit(
+                "The report file is open in another program (likely Excel) and could not be "
+                f"overwritten. Please close it and try again.\n\n{e}"
+            )
+            return
+        except Exception as e:
+            logger.exception("Model Change Impact worker failed")
+            self.failed.emit(str(e))
+            return
+
+        self.finished_ok.emit(summary)
