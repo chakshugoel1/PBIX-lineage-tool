@@ -13,6 +13,7 @@ logs/
 # Proprietary sample data used for local development/testing only -
 # do not publish real client PBIX files, dataflow exports, or generated
 # reports built from them to this public repo.
+*.pbix
 DTS - CashPlus-Dashboard (1).pbix
 DTS - Classification Pays - BLUE.pbix
 CASHPLUS-DASHBOARD 1.xlsx
