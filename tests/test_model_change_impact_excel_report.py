@@ -12,6 +12,7 @@ import os
 import sys
 
 import openpyxl
+from openpyxl.cell.rich_text import CellRichText
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -129,13 +130,20 @@ def test_playwright_input_severity_reflects_kpi_classification(tmp_path):
     wb = openpyxl.load_workbook(_build_report(tmp_path))
     ws = wb["Playwright Input"]
     rows = list(ws.iter_rows(min_row=2, values_only=True))
-    # visKpi has kpi_classification "certain" -> always "High", regardless of
-    # which changed object produced the row (there may be several).
-    kpi_rows = [r for r in rows if r[1] == "visKpi"]
-    assert kpi_rows and all(r[3] == "High" for r in kpi_rows)
-    # visChart has no KPI classification -> "Medium" (direct) or "Low" (transitive), never "High".
-    chart_rows = [r for r in rows if r[1] == "visChart"]
-    assert chart_rows and all(r[3] in ("Medium", "Low") for r in chart_rows)
+    assert len(rows) == 3  # one deduped row per visual, not one per changed object
+    by_visual = {r[1]: r for r in rows}
+    # visKpi has kpi_classification "certain" -> always "High".
+    assert by_visual["visKpi"][3] == "High"
+    # visChart has no KPI classification and is only reachable via the relationship's
+    # broad, table-wide seeding (not a direct binding) -> demoted to "Low", not "Medium"/"High".
+    # This is the concrete scenario the tool must get right: an unrelated change
+    # (e.g. a relationship edit) must not make an unrelated visual look as urgent
+    # as a genuinely, directly affected one.
+    assert by_visual["visChart"][3] == "Low"
+    assert by_visual["visChart"][4] == "Broad (table/relationship-level)"
+    # visKpiCustom is directly bound to the modified measure and only heuristically
+    # classified as a KPI (custom visual type name) -> "Medium" (direct basis, not certain KPI).
+    assert by_visual["visKpiCustom"][3] == "Medium"
 
 
 def test_manual_review_flags_relationship_change_and_heuristic_kpi(tmp_path):
@@ -153,3 +161,83 @@ def test_object_inventory_lists_current_model_objects(tmp_path):
     assert any(r[0] == "Table" and r[1] == "Sales" for r in rows)
     assert any(r[0] == "Measure" and r[2] == "Total Sales YTD" for r in rows)
     assert any(r[0] == "Relationship" for r in rows)
+
+
+def _cell_text(value):
+    if isinstance(value, CellRichText):
+        return "".join(str(part) for part in value)
+    return value
+
+
+def test_changed_measure_shows_full_before_after_with_highlighting(tmp_path):
+    wb = openpyxl.load_workbook(_build_report(tmp_path), rich_text=True)
+    ws = wb["Changed Measures"]
+    rows = list(ws.iter_rows(min_row=2, values_only=True))
+    row = next(r for r in rows if r[0] == "_Measures" and r[1] == "Total Sales" and r[4] == "expression")
+    before, after = row[5], row[6]
+    # After changed (new tokens added) -> highlighted rich text; before is unchanged -> plain text.
+    assert _cell_text(before) == "SUM(Sales[Amount])"
+    assert isinstance(after, CellRichText)
+    assert _cell_text(after) == "SUM(Sales[Amount]) * 1.1"
+
+
+def test_long_dax_expression_is_not_truncated(tmp_path):
+    baseline = _base_snapshot("baseline.pbix")
+    changed = copy.deepcopy(baseline)
+    changed["source_file"] = "changed.pbix"
+    long_expr = "SWITCH(TRUE(), " + ", ".join(f"Sales[Region] = \"R{i}\", {i}" for i in range(60)) + ", 0)"
+    assert len(long_expr) > 500
+    changed["measures"]["_Measures"]["Total Sales"]["expression"] = long_expr
+
+    layout = _report_layout()
+    diff_result = diff.diff_snapshots(baseline, changed)
+    impact_result = impact.analyze_impact(baseline, changed, diff_result, layout)
+    output_path = str(tmp_path / "long_expr.xlsx")
+    excel_report.build_excel_report(baseline, changed, diff_result, impact_result, layout, output_path)
+
+    wb = openpyxl.load_workbook(output_path, rich_text=True)
+    ws = wb["Changed Measures"]
+    rows = list(ws.iter_rows(min_row=2, values_only=True))
+    row = next(r for r in rows if r[1] == "Total Sales" and r[4] == "expression")
+    after_text = _cell_text(row[6])
+    assert after_text == long_expr
+    assert "..." not in after_text
+
+
+def test_visual_impact_sheet_is_grouped_by_page_and_deduped_per_visual(tmp_path):
+    wb = openpyxl.load_workbook(_build_report(tmp_path))
+    ws = wb["Visual Impact"]
+    assert ws.cell(row=2, column=1).value == "Page: Overview"
+
+    data_rows = list(ws.iter_rows(min_row=3, values_only=True))
+    visual_ids = [r[1] for r in data_rows]
+    assert visual_ids == sorted(visual_ids)
+    # each visual appears exactly once, even though several are touched by more
+    # than one root-cause change (the measure change and the relationship change).
+    assert len(visual_ids) == len(set(visual_ids)) == 3
+
+
+def test_visual_impact_basis_distinguishes_direct_from_broad(tmp_path):
+    wb = openpyxl.load_workbook(_build_report(tmp_path))
+    ws = wb["Visual Impact"]
+    by_visual = {r[1]: r for r in ws.iter_rows(min_row=3, values_only=True)}
+    # visKpiCustom is bound directly to the modified measure -> "Direct".
+    assert by_visual["visKpiCustom"][4] == "Direct"
+    # visChart is only reachable through the relationship's broad, whole-table seeding.
+    assert by_visual["visChart"][4] == "Broad (table/relationship-level)"
+
+
+def test_kpi_impact_sheet_only_lists_kpi_visuals_grouped_by_page(tmp_path):
+    wb = openpyxl.load_workbook(_build_report(tmp_path))
+    ws = wb["KPI Impact"]
+    assert ws.cell(row=2, column=1).value == "Page: Overview"
+    visual_ids = [r[1] for r in ws.iter_rows(min_row=3, values_only=True)]
+    assert set(visual_ids) == {"visKpi", "visKpiCustom"}
+
+
+def test_manual_review_notes_cardinality_only_relationship_change(tmp_path):
+    wb = openpyxl.load_workbook(_build_report(tmp_path))
+    ws = wb["Manual Review"]
+    rows = list(ws.iter_rows(min_row=2, values_only=True))
+    relationship_row = next(r for r in rows if r[0] == "Relationship")
+    assert "data refresh" in relationship_row[2].lower()
