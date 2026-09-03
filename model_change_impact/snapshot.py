@@ -15,6 +15,23 @@ import os
 import pandas as pd
 from pbixray import PBIXRay
 
+# Tabular Object Model DataType enum (Microsoft.AnalysisServices.Tabular.DataType) -
+# tmschema_columns exposes only the raw numeric code, so map it to a readable
+# name; unmapped codes are kept as-is (prefixed) rather than guessed.
+_DATA_TYPE_NAMES = {
+    1: "Automatic", 2: "String", 6: "Int64", 8: "Double",
+    9: "DateTime", 10: "Decimal", 11: "Boolean", 17: "Binary", 19: "Unknown",
+}
+
+
+def _data_type_name(code):
+    if code is None:
+        return None
+    try:
+        return _DATA_TYPE_NAMES.get(int(code), f"Unrecognized({code})")
+    except (TypeError, ValueError):
+        return f"Unrecognized({code})"
+
 
 def _has_col(df, col):
     """True if `df` is a real DataFrame exposing `col` (pbixray returns a
@@ -81,7 +98,7 @@ def _column_enrichment(model):
     out = {}
     for _, row in df.iterrows():
         out[(str(row["TableName"]), str(row["Name"]))] = {
-            "data_type": _val(row, "DataType"),
+            "data_type": _data_type_name(_val(row, "DataType")),
             "format_string": _val(row, "FormatString"),
             "is_hidden": bool(_val(row, "IsHidden", False)),
             "description": _val(row, "Description"),

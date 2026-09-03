@@ -131,6 +131,7 @@ def _build_field_index(report_layout):
                     "page_id": page.get("page_id"),
                     "page_display_name": page.get("display_name"),
                     "visual_id": visual.get("visual_id"),
+                    "visual_display_name": visual.get("display_name"),
                     "visual_type": visual.get("visual_type"),
                     "kpi_classification": visual.get("kpi_classification"),
                 })
@@ -207,19 +208,34 @@ def _relationship_diff_records(rel_diff, baseline_snapshot, changed_snapshot, re
     """Coarse, heuristic impact: a relationship change can alter filter
     propagation across its two tables, so every column of both tables is
     treated as a (broad) seed - this is intentionally over-inclusive and
-    should be treated as a manual-review signal, not a precise result."""
+    should be treated as a manual-review signal, not a precise result.
+
+    Strict rule used for impact analysis: only MANUAL relationship changes are
+    considered. AUTO_DETECTED and UNCERTAIN relationships are excluded from
+    visual impact calculation and from the Excel relationship lists.
+    """
     records = []
+
     for item in rel_diff["added"]:
+        if item.get("detection_method") not in ("MANUAL", None):
+            continue
         seed = _table_column_keys(changed_snapshot, item["from_table"]) | _table_column_keys(changed_snapshot, item["to_table"])
         records.append(_build_impact_record("added", item, seed, reverse_graph, field_index))
+
     for item in rel_diff["removed"]:
+        if item.get("detection_method") not in ("MANUAL", None):
+            continue
         seed = _table_column_keys(baseline_snapshot, item["from_table"]) | _table_column_keys(baseline_snapshot, item["to_table"])
         records.append(_build_impact_record("removed", item, seed, reverse_graph, field_index))
+
     for item in rel_diff["changed"]:
+        if item.get("detection_method") not in ("MANUAL", None):
+            continue
         from_table = item["identity_after"]["from_table"]
         to_table = item["identity_after"]["to_table"]
         seed = _table_column_keys(changed_snapshot, from_table) | _table_column_keys(changed_snapshot, to_table)
         records.append(_build_impact_record("modified", item, seed, reverse_graph, field_index))
+
     return records
 
 

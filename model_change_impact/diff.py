@@ -13,8 +13,13 @@ name-based key when either side lacks a tag. A lineage_tag match where the
 name (and/or table) differs is flagged as a rename candidate rather than
 being reported as a separate add+remove.
 
+Relationships are also tagged with `detection_method` (MANUAL | AUTO_DETECTED |
+UNCERTAIN) to help identify and filter out Power BI's auto-detected relationships
+in downstream analysis.
+
 `diff_snapshots()` is the only entry point most callers need.
 """
+from model_change_impact import autodetect
 
 _TABLE_IDENTITY_FIELDS = ("table",)
 _TABLE_COMPARE_FIELDS = ("is_calculated_table", "m_expression", "is_hidden", "description")
@@ -41,7 +46,38 @@ def diff_snapshots(baseline, changed):
     """Compare a baseline and changed snapshot (both from
     `snapshot.build_snapshot()`) and return a JSON-serializable diff dict
     with one section per entity type, each shaped as
-    `{added: [...], removed: [...], changed: [...], unchanged_count: N}`."""
+    `{added: [...], removed: [...], changed: [...], unchanged_count: N}`.
+
+    Relationships are additionally tagged with `detection_method`
+    (MANUAL | AUTO_DETECTED | UNCERTAIN) to support filtering auto-detected
+    relationships in downstream impact analysis."""
+
+    rel_diff = _diff_entities(
+        list(baseline.get("relationships", [])), list(changed.get("relationships", [])),
+        _RELATIONSHIP_IDENTITY_FIELDS, _RELATIONSHIP_COMPARE_FIELDS,
+        tag_field=None,  # relationships have no stable lineage_tag in the snapshot
+    )
+
+    # Classify relationships as auto-detected or manually created
+    changed_rels = changed.get("relationships", [])
+    detection_method_dict = autodetect.detect_autodetected_relationships(changed_rels)
+
+    # Tag all relationship objects with their detection method
+    for rel in rel_diff["added"]:
+        key = (rel["from_table"], rel["from_column"], rel["to_table"], rel["to_column"])
+        rel["detection_method"] = detection_method_dict.get(key, "UNKNOWN")
+
+    for rel in rel_diff["removed"]:
+        key = (rel["from_table"], rel["from_column"], rel["to_table"], rel["to_column"])
+        # For removed relationships, we only know if they're inactive in the baseline
+        rel["detection_method"] = "AUTO_DETECTED" if not rel.get("is_active", True) else "MANUAL"
+
+    for rel_record in rel_diff["changed"]:
+        # For changed relationships, get the key from identity_after (the changed version)
+        key = (rel_record["identity_after"]["from_table"], rel_record["identity_after"]["from_column"],
+               rel_record["identity_after"]["to_table"], rel_record["identity_after"]["to_column"])
+        rel_record["detection_method"] = detection_method_dict.get(key, "UNKNOWN")
+
     return {
         "baseline_file": baseline.get("source_file"),
         "changed_file": changed.get("source_file"),
@@ -57,11 +93,7 @@ def diff_snapshots(baseline, changed):
             _flatten_measures(baseline), _flatten_measures(changed),
             _MEASURE_IDENTITY_FIELDS, _MEASURE_COMPARE_FIELDS,
         ),
-        "relationships": _diff_entities(
-            list(baseline.get("relationships", [])), list(changed.get("relationships", [])),
-            _RELATIONSHIP_IDENTITY_FIELDS, _RELATIONSHIP_COMPARE_FIELDS,
-            tag_field=None,  # relationships have no stable lineage_tag in the snapshot
-        ),
+        "relationships": rel_diff,
     }
 
 

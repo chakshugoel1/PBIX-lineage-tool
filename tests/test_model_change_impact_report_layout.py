@@ -51,6 +51,13 @@ class TestPbirFormat:
         chart_visual = json.dumps({
             "visual": {
                 "visualType": "columnChart",
+                "visualContainerObjects": {
+                    "title": [{
+                        "properties": {
+                            "text": {"expr": {"Literal": {"Value": "'Sales by region'"}}}
+                        }
+                    }]
+                },
                 "query": {
                     "queryState": {
                         "Category": {"projections": [{"field": {"Column": {
@@ -107,6 +114,7 @@ class TestPbirFormat:
         chart = visuals["visChart"]
         assert chart["kind"] == "visual"
         assert chart["visual_type"] == "columnChart"
+        assert chart["display_name"] == "Sales by region"
         assert {"kind": "column", "table": "Orders", "field": "Region", "role": "Category"} in chart["fields"]
         assert {"kind": "measure", "table": "Orders", "field": "Total Sales", "role": "Y"} in chart["fields"]
 
@@ -136,6 +144,13 @@ class TestLegacyFormat:
         chart_config = json.dumps({
             "singleVisual": {
                 "visualType": "clusteredColumnChart",
+                "vcObjects": {
+                    "title": {
+                        "properties": {
+                            "text": {"expr": {"Literal": {"Value": "'Regional sales'"}}}
+                        }
+                    }
+                },
                 "prototypeQuery": {
                     "Select": [
                         {
@@ -190,6 +205,7 @@ class TestLegacyFormat:
         chart = visuals["visChart"]
         assert chart["kind"] == "visual"
         assert chart["visual_type"] == "clusteredColumnChart"
+        assert chart["display_name"] == "Regional sales"
         assert {"kind": "column", "table": "Orders", "field": "Region", "role": "Category"} in chart["fields"]
         assert {"kind": "measure", "table": "Orders", "field": "Total Sales", "role": "Y"} in chart["fields"]
         assert visuals["visGroup"]["kind"] == "visualGroup"

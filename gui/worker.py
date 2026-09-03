@@ -220,6 +220,11 @@ class ModelChangeImpactWorker(QThread):
             if self.cancel_event.is_set():
                 raise RuntimeError("Analysis cancelled.")
 
+            self.progress.emit("Reading baseline report's visuals/pages...")
+            baseline_layout = report_layout.build_report_layout(self.baseline_path)
+            if self.cancel_event.is_set():
+                raise RuntimeError("Analysis cancelled.")
+
             self.progress.emit("Reading changed report's visuals/pages...")
             changed_layout = report_layout.build_report_layout(self.changed_path)
             if self.cancel_event.is_set():
@@ -237,7 +242,13 @@ class ModelChangeImpactWorker(QThread):
 
             self.progress.emit("Writing Excel report...")
             excel_report.build_excel_report(
-                baseline_snapshot, changed_snapshot, diff_result, impact_result, changed_layout, self.output_path,
+                baseline_snapshot,
+                changed_snapshot,
+                diff_result,
+                impact_result,
+                changed_layout,
+                self.output_path,
+                baseline_report_layout=baseline_layout,
             )
 
             def _count(section):

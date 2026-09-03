@@ -51,6 +51,60 @@ def build_report_layout(pbix_path):
     }
 
 
+def compare_report_layouts(baseline_layout, changed_layout):
+    """Return a minimal actual-report-diff summary for the changed PBIX report.
+
+    This is not a rendered-page comparison; it compares report metadata that is
+    stored in the PBIX file itself, such as visual IDs, field bindings, and page
+    structure. It is therefore a real metadata diff, but still not a pixel-perfect
+    UI observation.
+    """
+    if not baseline_layout or not changed_layout:
+        return []
+
+    before_pages = {page.get("page_id"): page for page in baseline_layout.get("pages", []) if page.get("page_id")}
+    after_pages = {page.get("page_id"): page for page in changed_layout.get("pages", []) if page.get("page_id")}
+    rows = []
+
+    for page_id in sorted(set(before_pages) | set(after_pages)):
+        before_page = before_pages.get(page_id, {})
+        after_page = after_pages.get(page_id, {})
+        before_visuals = {v.get("visual_id"): v for v in before_page.get("visuals", []) if v.get("visual_id")}
+        after_visuals = {v.get("visual_id"): v for v in after_page.get("visuals", []) if v.get("visual_id")}
+
+        for visual_id in sorted(set(before_visuals) | set(after_visuals)):
+            before_visual = before_visuals.get(visual_id)
+            after_visual = after_visuals.get(visual_id)
+            if before_visual is None or after_visual is None:
+                rows.append({
+                    "grain": "Visual",
+                    "name": visual_id,
+                    "page": after_page.get("display_name") or page_id,
+                    "changed": "Yes",
+                    "changed_level": "Visual",
+                    "actual_report_change": "Yes",
+                    "candidate_visual_impact": "Yes",
+                    "details": "Visual added or removed in report layout",
+                })
+                continue
+
+            before_fields = tuple(sorted((f.get("table", ""), f.get("field", ""), f.get("kind", "")) for f in before_visual.get("fields", [])))
+            after_fields = tuple(sorted((f.get("table", ""), f.get("field", ""), f.get("kind", "")) for f in after_visual.get("fields", [])))
+            if before_fields != after_fields or before_visual.get("visual_type") != after_visual.get("visual_type"):
+                rows.append({
+                    "grain": "Visual",
+                    "name": visual_id,
+                    "page": after_page.get("display_name") or page_id,
+                    "changed": "Yes",
+                    "changed_level": "Visual",
+                    "actual_report_change": "Yes",
+                    "candidate_visual_impact": "Yes",
+                    "details": "Visual field bindings or type changed between report layouts",
+                })
+
+    return rows
+
+
 def _safe_basename(pbix_path):
     """`pbix_path` is normally a filesystem path, but tests pass an
     in-memory file-like object instead - fall back to "" rather than
@@ -136,6 +190,30 @@ def _extract_filters(filters_list):
     return out
 
 
+def _literal_display_text(value):
+    if isinstance(value, str) and len(value) >= 2 and value.startswith("'") and value.endswith("'"):
+        return value[1:-1].replace("''", "'")
+    return value if isinstance(value, str) else None
+
+
+def _visual_title(objects):
+    title_items = (objects or {}).get("title", [])
+    if isinstance(title_items, dict):
+        title_items = [title_items]
+    for item in title_items:
+        value = (
+            item.get("properties", {})
+            .get("text", {})
+            .get("expr", {})
+            .get("Literal", {})
+            .get("Value")
+        )
+        title = _literal_display_text(value)
+        if title:
+            return title
+    return None
+
+
 # ---------------------------------------------------------------------------
 # PBIR (modern multi-file) format
 # ---------------------------------------------------------------------------
@@ -189,6 +267,7 @@ def _build_pbir_visual(visual_id, visual_json):
                     fields.append({**ref, "role": role})
         return {
             "visual_id": visual_id,
+            "display_name": _visual_title(v.get("visualContainerObjects")) or v.get("displayName") or visual_json.get("displayName"),
             "kind": "visual",
             "visual_type": visual_type,
             "parent_group_id": parent_group_id,
@@ -253,6 +332,13 @@ def _parse_legacy(zf):
     }
 
 
+def _legacy_visual_display_name(config):
+    title = _visual_title(config.get("singleVisual", {}).get("vcObjects"))
+    if title:
+        return title
+    return config.get("displayName") or config.get("name")
+
+
 def _build_legacy_visual(vc):
     visual_id = vc.get("name", "")
     parent_group_id = vc.get("parentGroupName")
@@ -297,6 +383,7 @@ def _build_legacy_visual(vc):
 
     return {
         "visual_id": visual_id,
+        "display_name": _legacy_visual_display_name(config),
         "kind": "visual",
         "visual_type": visual_type,
         "parent_group_id": parent_group_id,

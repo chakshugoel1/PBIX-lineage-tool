@@ -102,13 +102,13 @@ class TestSnapshotFullyEnriched:
     def _make_model(self):
         frames = _base_frames()
         tmschema_columns = pd.DataFrame([
-            {"TableName": "Sales", "Name": "OrderID", "DataType": "Int64", "FormatString": None,
+            {"TableName": "Sales", "Name": "OrderID", "DataType": 6, "FormatString": None,
              "IsHidden": 0, "Description": None, "DisplayFolder": None, "LineageTag": "col-orderid"},
-            {"TableName": "Sales", "Name": "Amount", "DataType": "Double", "FormatString": "#,0.00",
+            {"TableName": "Sales", "Name": "Amount", "DataType": 8, "FormatString": "#,0.00",
              "IsHidden": 0, "Description": "Order amount", "DisplayFolder": None, "LineageTag": "col-amount"},
-            {"TableName": "Sales", "Name": "Margin", "DataType": "Double", "FormatString": "#,0.00",
+            {"TableName": "Sales", "Name": "Margin", "DataType": 8, "FormatString": "#,0.00",
              "IsHidden": 1, "Description": None, "DisplayFolder": "Calcs", "LineageTag": "col-margin"},
-            {"TableName": "Orders", "Name": "OrderID", "DataType": "Int64", "FormatString": None,
+            {"TableName": "Orders", "Name": "OrderID", "DataType": 6, "FormatString": None,
              "IsHidden": 0, "Description": None, "DisplayFolder": None, "LineageTag": "col-ordersid"},
         ])
         tmschema_tables = pd.DataFrame([

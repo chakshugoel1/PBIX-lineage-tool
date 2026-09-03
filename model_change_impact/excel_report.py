@@ -23,6 +23,7 @@ from openpyxl.cell.text import InlineFont
 from openpyxl.styles import Font, PatternFill, Alignment
 
 from services import fileutils
+from model_change_impact import report_layout as report_layout_module
 
 HEADER_FILL = PatternFill(start_color="FF83CCEB", end_color="FF83CCEB", fill_type="solid")
 RED_FILL = PatternFill(start_color="FFFF4B4B", end_color="FFFF4B4B", fill_type="solid")
@@ -42,28 +43,30 @@ _COLUMN_FIELDS = ("data_type", "is_calculated", "expression", "format_string", "
 _RELATIONSHIP_FIELDS = ("is_active", "cardinality", "cross_filtering_behavior", "rely_on_referential_integrity")
 
 
-def build_excel_report(baseline_snapshot, changed_snapshot, diff_result, impact_result, report_layout, output_path):
+def build_excel_report(baseline_snapshot, changed_snapshot, diff_result, impact_result, report_layout, output_path, baseline_report_layout=None):
     """Build the full Model Change Impact workbook and write it to
     `output_path` (atomically, via the same helper V1 uses). Returns
     `output_path`."""
     visual_rows = _flatten_visual_impacts(impact_result)
     manual_review_rows = _build_manual_review_rows(diff_result, report_layout, visual_rows)
 
+    # Compare report layouts to get actual report changes
+    actual_report_changes = []
+    if baseline_report_layout is not None:
+        actual_report_changes = report_layout_module.compare_report_layouts(baseline_report_layout, report_layout)
+
+    summary_rows = _build_impact_summary_rows(diff_result, impact_result, visual_rows, actual_report_changes)
+
     wb = Workbook()
     ws_summary = wb.active
     ws_summary.title = "Summary"
     _write_summary_sheet(ws_summary, diff_result, report_layout, visual_rows, manual_review_rows)
 
+    _write_impact_summary_sheet(wb.create_sheet("Impact Summary"), summary_rows)
     _write_table_sheet(wb.create_sheet("Changed Tables"), diff_result["tables"])
     _write_measure_sheet(wb.create_sheet("Changed Measures"), diff_result["measures"])
     _write_column_sheet(wb.create_sheet("Changed Columns"), diff_result["columns"])
     _write_relationship_sheet(wb.create_sheet("Changed Relationships"), diff_result["relationships"])
-    _write_visual_impact_sheet(wb.create_sheet("Visual Impact"), visual_rows)
-    _write_kpi_impact_sheet(wb.create_sheet("KPI Impact"), visual_rows)
-    _write_playwright_input_sheet(wb.create_sheet("Playwright Input"), visual_rows)
-    _write_manual_review_sheet(wb.create_sheet("Manual Review"), manual_review_rows)
-    _write_object_inventory_sheet(wb.create_sheet("Object Inventory"), changed_snapshot)
-
     output_dir = os.path.dirname(os.path.abspath(output_path))
     if output_dir and not os.path.isdir(output_dir):
         os.makedirs(output_dir, exist_ok=True)
@@ -130,6 +133,86 @@ def _apply_wrap(ws):
     for row in ws.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = WRAP
+
+
+def _build_impact_summary_rows(diff_result, impact_result, visual_rows, actual_report_changes=None):
+    """Build one summary row for every changed object and affected visual."""
+    if actual_report_changes is None:
+        actual_report_changes = []
+
+    actual_changed_visuals = {
+        (row["page"], row["name"])
+        for row in actual_report_changes
+    }
+
+    rows = []
+    section_order = (
+        ("tables", "Table"),
+        ("measures", "Measure"),
+        ("columns", "Column"),
+        ("relationships", "Relationship"),
+    )
+
+    for section_name, grain_name in section_order:
+        kind = section_name[:-1]
+        for record in impact_result.get(section_name, []):
+            detail = record["detail"]
+            changed_object = _describe_changed_object(kind, detail)
+            impacted_visuals = record.get("impacted_visuals", [])
+            if not impacted_visuals:
+                rows.append({
+                    "Changed Object Type": grain_name,
+                    "Changed Object": changed_object,
+                    "Change Type": record["change_type"].title(),
+                    "Affected Visual ID": "",
+                    "Visual Type": "",
+                    "Page Name": "",
+                    "Is KPI": "No",
+                    "KPI Confidence": "",
+                    "Impact Basis": "No visual binding found",
+                    "Actual Report Change": "No",
+                })
+                continue
+
+            for visual in impacted_visuals:
+                page_name = visual.get("page_display_name") or visual.get("page_id") or ""
+                kpi_confidence = visual.get("kpi_classification") or ""
+                rows.append({
+                    "Changed Object Type": grain_name,
+                    "Changed Object": changed_object,
+                    "Change Type": record["change_type"].title(),
+                    "Affected Visual ID": visual.get("visual_id") or "",
+                    "Affected Visual Name": visual.get("visual_display_name") or visual.get("visual_id") or "",
+                    "Visual Type": visual.get("visual_type") or "",
+                    "Page Name": page_name,
+                    "Is KPI": "Yes" if kpi_confidence in ("certain", "heuristic") else "No",
+                    "KPI Confidence": kpi_confidence,
+                    "Impact Basis": _impact_basis(kind, record["change_type"], visual["matched_via"]),
+                    "Actual Report Change": "Yes" if (page_name, visual.get("visual_id")) in actual_changed_visuals else "No",
+                })
+
+    return sorted(rows, key=lambda row: (
+        row["Changed Object Type"], row["Changed Object"], row["Page Name"], row["Affected Visual ID"],
+    ))
+
+
+def _write_impact_summary_sheet(ws, rows):
+    headers = [
+        "Changed Object Type", "Changed Object", "Change Type", "Affected Visual ID", "Affected Visual Name",
+        "Visual Type", "Page Name", "Is KPI", "KPI Confidence", "Impact Basis", "Actual Report Change",
+    ]
+    _write_header(ws, headers)
+    for row in rows:
+        ws.append([
+            row.get("Changed Object Type", ""), row.get("Changed Object", ""), row.get("Change Type", ""),
+            row.get("Affected Visual ID", ""), row.get("Affected Visual Name", ""), row.get("Visual Type", ""),
+            row.get("Page Name", ""),
+            row.get("Is KPI", "No"), row.get("KPI Confidence", ""), row.get("Impact Basis", ""),
+            row.get("Actual Report Change", "No"),
+        ])
+    ws.auto_filter.ref = f"A1:K{max(ws.max_row, 1)}"
+    _apply_wrap(ws)
+    _autofit_columns(ws)
 
 
 def _cell_text(value):
@@ -261,6 +344,18 @@ def _write_summary_sheet(ws, diff_result, report_layout, visual_rows, manual_rev
         _add_sheet_link(ws, row, 7, sheet_name)
         row += 1
 
+    # Add auto-detected relationships count
+    autodetected_count = sum(
+        sum(1 for item in diff_result["relationships"].get(cat, [])
+            if isinstance(item, dict) and item.get("detection_method") == "AUTO_DETECTED")
+        for cat in ("added", "removed", "changed")
+    )
+    if autodetected_count > 0:
+        row += 1
+        ws.cell(row=row, column=1, value="Auto-Detected Relationships (excluded from impact analysis):")
+        ws.cell(row=row, column=2, value=autodetected_count)
+        row += 1
+
     unique_visuals = {(r["page_id"], r["visual_id"]) for r in visual_rows}
     unique_kpi_visuals = {(r["page_id"], r["visual_id"]) for r in visual_rows if r["kpi_classification"] in ("certain", "heuristic")}
     broad_only_count = sum(1 for r in visual_rows if r["best_basis"] == "Broad (table/relationship-level)")
@@ -268,7 +363,7 @@ def _write_summary_sheet(ws, diff_result, report_layout, visual_rows, manual_rev
     row += 1
     ws.cell(row=row, column=1, value="Impacted visuals (unique):")
     ws.cell(row=row, column=2, value=len(unique_visuals))
-    _add_sheet_link(ws, row, 7, "Visual Impact")
+    _add_sheet_link(ws, row, 7, "Impact Summary")
     row += 1
     ws.cell(row=row, column=1, value="  - direct / confirmed:")
     ws.cell(row=row, column=2, value=len(unique_visuals) - broad_only_count)
@@ -278,15 +373,13 @@ def _write_summary_sheet(ws, diff_result, report_layout, visual_rows, manual_rev
     row += 1
     ws.cell(row=row, column=1, value="Impacted KPI/card visuals (unique):")
     ws.cell(row=row, column=2, value=len(unique_kpi_visuals))
-    _add_sheet_link(ws, row, 7, "KPI Impact")
+    _add_sheet_link(ws, row, 7, "Impact Summary")
     row += 1
     ws.cell(row=row, column=1, value="Playwright test candidates:")
     ws.cell(row=row, column=2, value=len(visual_rows))
-    _add_sheet_link(ws, row, 7, "Playwright Input")
     row += 1
     ws.cell(row=row, column=1, value="Manual review items:")
     ws.cell(row=row, column=2, value=len(manual_review_rows))
-    _add_sheet_link(ws, row, 7, "Manual Review")
 
     _autofit_columns(ws)
 
@@ -383,20 +476,33 @@ def _write_column_sheet(ws, columns_diff):
 
 
 def _write_relationship_sheet(ws, rel_diff):
-    _write_header(ws, ["From Table", "From Column", "To Table", "To Column", "Change Type", "Field", "Before", "After"])
+    _write_header(ws, ["From Table", "From Column", "To Table", "To Column", "Change Type", "Detection", "Field", "Before", "After"])
+
     for item in rel_diff["added"]:
-        ws.append([item["from_table"], item["from_column"], item["to_table"], item["to_column"], "Added",
+        if item.get("detection_method") not in ("MANUAL", None):
+            continue
+        detection = item.get("detection_method", "MANUAL")
+        ws.append([item["from_table"], item["from_column"], item["to_table"], item["to_column"], "Added", detection,
                    "(all fields)", "(did not exist)", _full_fields_text(item, _RELATIONSHIP_FIELDS)])
+
     for item in rel_diff["removed"]:
-        ws.append([item["from_table"], item["from_column"], item["to_table"], item["to_column"], "Removed",
+        if item.get("detection_method") not in ("MANUAL", None):
+            continue
+        detection = item.get("detection_method", "MANUAL")
+        ws.append([item["from_table"], item["from_column"], item["to_table"], item["to_column"], "Removed", detection,
                    "(all fields)", _full_fields_text(item, _RELATIONSHIP_FIELDS), "(no longer exists)"])
+
     for item in rel_diff["changed"]:
+        if item.get("detection_method") not in ("MANUAL", None):
+            continue
         ident = item["identity_after"]
+        detection = item.get("detection_method", "MANUAL")
         for field in (f for f in _RELATIONSHIP_FIELDS if f in item["field_changes"]):
             before_val, after_val = _diff_cell_values(
                 item["field_changes"][field]["before"], item["field_changes"][field]["after"])
             ws.append([ident["from_table"], ident["from_column"], ident["to_table"], ident["to_column"],
-                       "Modified", field, before_val, after_val])
+                       "Modified", detection, field, before_val, after_val])
+
     _apply_wrap(ws)
     _autofit_columns(ws)
 
