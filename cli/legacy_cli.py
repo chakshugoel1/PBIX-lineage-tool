@@ -59,9 +59,9 @@ def load_entries(pbix_path):
     model = PBIXRay(pbix_path)
     entries = []  # (source_kind, name, expression_text)
     for _, row in model.power_query.iterrows():
-        entries.append(("table", row["TableName"], str(row["Expression"])))
+        entries.append(("table", row["TableName"], ll.strip_m_comments(str(row["Expression"]))))
     for _, row in model.m_parameters.iterrows():
-        entries.append(("query", row["ParameterName"], str(row["Expression"])))
+        entries.append(("query", row["ParameterName"], ll.strip_m_comments(str(row["Expression"]))))
     return entries
 
 

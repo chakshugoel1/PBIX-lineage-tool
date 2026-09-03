@@ -131,6 +131,55 @@ RE_LOCAL_ASSIGN_QUOTED = re.compile(r'#"([^"]+)"\s*=\s*"((?:[^"\\]|\\.)*)"')
 RE_SIMPLE_QUOTED = re.compile(r'^"((?:[^"\\]|\\.)*)"')
 
 
+def strip_m_comments(text):
+    """Remove M `//line` and `/* block */` comments from `text` before any
+    connector/field regex runs against it, so a commented-out (no longer
+    active) dataflow/connector call can't be mistaken for the query's real
+    source - e.g. an old `//Source = PowerBI.Dataflows(null), ...` line left
+    behind after a query was repointed at a local reference. Respects M
+    string literals (a doubled quote is M's escape for a literal quote
+    inside a string) so a `//` inside a URL string like "http://..." is
+    never treated as a comment start. Block comments are collapsed to
+    whitespace (newlines preserved) rather than dropped outright, so
+    line-based regexes/offsets downstream aren't affected and adjacent
+    tokens don't get merged."""
+    if not text or not isinstance(text, str):
+        return text
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == '"':
+                    if j + 1 < n and text[j + 1] == '"':
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            out.append(text[i:j])
+            i = j
+        elif text[i:i + 2] == '//':
+            j = text.find('\n', i)
+            if j == -1:
+                i = n
+            else:
+                out.append('\n')
+                i = j + 1
+        elif text[i:i + 2] == '/*':
+            j = text.find('*/', i + 2)
+            end = j + 2 if j != -1 else n
+            inner = text[i:end]
+            out.append('\n' * inner.count('\n') if '\n' in inner else ' ')
+            i = end
+        else:
+            out.append(ch)
+            i += 1
+    return ''.join(out)
+
+
 def extract_fields(text):
     """Scan `text` for every '[field] = value' (Style A) occurrence and every
     '[field = value, field2 = value2, ...]' record-selector body (Style B,
@@ -321,8 +370,10 @@ class Universe:
     one dataflow's shared queries) with dependency-graph resolution."""
 
     def __init__(self, entries):
-        # entries: dict name -> expression text
-        self.texts = dict(entries)
+        # entries: dict name -> expression text. Comments are stripped once
+        # here so every consumer (field/connector regexes, dependency
+        # scanning, etc.) automatically sees only the query's active code.
+        self.texts = {name: strip_m_comments(text) for name, text in entries.items()}
         self.names = list(self.texts.keys())
         self._deps_cache = {}
 
