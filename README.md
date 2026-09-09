@@ -124,12 +124,64 @@ python compare_final_source_table.py  # compares config.GENERATED_XLSX against c
 This is optional/legacy — it is **not** part of the default workflow for
 future PBIX files that don't have a reference workbook.
 
+## Version 2: Model Change Impact
+
+Version 2 compares a baseline PBIX file with a changed PBIX file and shows
+which report content may be affected by semantic-model changes. It is
+available in the desktop application's **Model Change Impact** tab.
+
+The analysis identifies:
+
+- Added, removed, modified, and renamed tables, columns, and measures.
+- Manually created relationship changes. Auto-detected and uncertain
+  relationships are excluded from the impact results to reduce noise.
+- DAX dependency chains and visuals affected by changed model objects.
+- Affected report pages, KPI/card visuals, visual types, and visible visual
+  names where available.
+- Actual report-layout changes separately from candidate downstream impact.
+
+### Version 2 workflow
+
+1. Open the **Model Change Impact** tab in the desktop application.
+2. Select the baseline (before) PBIX file and changed (after) PBIX file.
+3. Select an output folder and click **Analyze Changes**.
+4. Review the generated Excel workbook.
+
+The workbook includes:
+
+- `Summary` — source files, change counts, and impact totals.
+- `Impact Summary` — one row per changed object and affected visual, including
+  the visual name, page name, KPI status, impact basis, and actual report
+  change indicator.
+- `Changed Tables`, `Changed Measures`, `Changed Columns`, and
+  `Changed Relationships` — detailed before/after model changes.
+
+Version 2 is intended for impact assessment and regression testing. Its DAX
+dependency scan is heuristic, and relationship impact is deliberately broad
+where filter propagation cannot be determined precisely; results should be
+reviewed before production deployment.
+
 ## Manual-override data files (travel with the repo, not machine-specific)
 
 - `guid_dataflow_names.json` — resolves cross-workspace dataflow references
-  that only carry a GUID (no readable name) in the M-code; add entries here
-  when a report references a dataflow you can identify by its
-  `https://app.powerbi.com/groups/{workspaceId}/dataflows/{dataflowId}` URL.
+  that only carry a GUID (no readable name) in the M-code. This file now
+  fills itself in: every GUID the tool resolves is written back to it, so
+  each unknown dataflow is only ever looked up once. Names are learned, in
+  order, from:
+  1. **Exporting dataflows** (Dataflow Export tab) — the Power BI listing
+     reports each dataflow's GUID and name together, so everything exported
+     from a workspace is recognised from then on.
+  2. **The exported dataflow files themselves** — a GUID is identified when
+     exactly one provided dataflow JSON publishes *every* entity the report
+     reads from that GUID. Runs entirely offline. A single shared entity
+     name is never enough to claim a match.
+  3. **Asking Power BI** — tick *"Ask Power BI for the names of unknown
+     dataflow GUIDs"* on the Home tab. Requires an interactive sign-in with
+     access to the workspace, so it is off by default.
+
+  You can still add or correct entries by hand. The offline matcher never
+  overwrites an existing entry; exporting or looking up refreshes it,
+  because Power BI is authoritative about its own dataflow names.
 - Every other kind of low-confidence result (missing schema, ambiguous
   match, multi-source unions, unresolved references) is flagged inline in
   both reports as `NEEDS MANUAL OVERRIDE` — there is no separate override
@@ -230,6 +282,7 @@ the Home tab's reports), never silently overwritten in place.
 | `core/` | M-code parsing and multi-level lineage resolution engine |
 | `reporting/` | Main lineage, companion lineage, transformation, and comparison workbook generation |
 | `services/` | Shared file operations and PowerShell dataflow export integration |
+| `model_change_impact/` | Version 2 PBIX comparison, dependency analysis, visual impact, and Excel reporting |
 | `cli/` | Standalone inspection command-line interface |
 | `powershell/` | PowerShell scripts invoked by Python services |
 | `tests/` | Automated tests and pytest configuration |

@@ -7,12 +7,13 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Write-Result {
-    param([bool]$Success, [string]$Stage, [string]$Message, [array]$Files = @())
+    param([bool]$Success, [string]$Stage, [string]$Message, [array]$Files = @(), [array]$Mappings = @())
     $result = @{
-        success = $Success
-        stage   = $Stage
-        message = $Message
-        files   = $Files
+        success  = $Success
+        stage    = $Stage
+        message  = $Message
+        files    = $Files
+        mappings = $Mappings
     }
     Write-Output ("##RESULT##" + ($result | ConvertTo-Json -Compress -Depth 5))
 }
@@ -85,10 +86,21 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
 $files = @()
 $failures = @()
+# The REST listing is the only place both the dataflow GUID and its friendly
+# name are known together; capture it so GUID-only references in report M code
+# can be resolved later without another sign-in.
+$mappings = @()
 foreach ($df in $dataflows) {
     $name = Get-SafeFileName -Name $df.name
     $destPath = Join-Path $OutputDir "$name.json"
     Write-Output "Exporting '$($df.name)' ($($df.objectId))..."
+    $mappings += @{
+        key            = "$WorkspaceId/$($df.objectId)"
+        workspace_id   = $WorkspaceId
+        dataflow_id    = "$($df.objectId)"
+        dataflow_name  = "$($df.name)"
+        workspace_name = "$($workspace.Name)"
+    }
     try {
         Invoke-PowerBIRestMethod -Url "groups/$WorkspaceId/dataflows/$($df.objectId)" -Method Get -OutFile $destPath -ErrorAction Stop
         $files += $destPath
@@ -100,7 +112,7 @@ foreach ($df in $dataflows) {
 }
 
 if ($files.Count -eq 0) {
-    Write-Result -Success $false -Stage "export" -Message "All $($dataflows.Count) dataflow(s) failed to export."
+    Write-Result -Success $false -Stage "export" -Message "All $($dataflows.Count) dataflow(s) failed to export." -Mappings $mappings
     exit 1
 }
 
@@ -108,4 +120,4 @@ $message = "$($files.Count) of $($dataflows.Count) dataflow(s) exported."
 if ($failures.Count -gt 0) {
     $message += " Failed: $($failures -join ', ')"
 }
-Write-Result -Success $true -Stage "done" -Message $message -Files $files
+Write-Result -Success $true -Stage "done" -Message $message -Files $files -Mappings $mappings

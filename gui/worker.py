@@ -45,12 +45,14 @@ class PipelineWorker(QThread):
     finished_ok = Signal(dict)
     failed = Signal(str)
 
-    def __init__(self, pbix_path, dataflow_folder, output_folder, archive_previous=True, parent=None):
+    def __init__(self, pbix_path, dataflow_folder, output_folder, archive_previous=True,
+                 online_guid_lookup=False, parent=None):
         super().__init__(parent)
         self.pbix_path = pbix_path
         self.dataflow_folder = dataflow_folder
         self.output_folder = output_folder
         self.archive_previous = archive_previous
+        self.online_guid_lookup = online_guid_lookup
         self.cancel_event = threading.Event()
 
     def request_cancel(self):
@@ -72,6 +74,7 @@ class PipelineWorker(QThread):
             rows, ctx = blr.build_report(
                 self.pbix_path, self.dataflow_folder,
                 cancellation_event=self.cancel_event,
+                online_guid_lookup=self.online_guid_lookup,
             )
             if self.cancel_event.is_set():
                 raise RuntimeError("Pipeline cancelled.")

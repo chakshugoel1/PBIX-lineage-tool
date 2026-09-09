@@ -12,6 +12,7 @@ DEFAULTS = {
     "dataflow_folder": "",
     "output_folder": "",
     "archive_previous_runs": True,
+    "online_guid_lookup": False,
     "theme": "dark",
     "dataflow_workspace_id": "",
     "dataflow_output_dir": "",

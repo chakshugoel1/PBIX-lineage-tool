@@ -10,10 +10,31 @@ import threading
 import time
 
 import config
+from core import lineage_lib as ll
 from services import fileutils
 
 RESULT_PREFIX = "##RESULT##"
 _SCRIPT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "powershell", "Export-AllDataflows.ps1")
+
+
+def persist_guid_mappings(mappings, source="powerbi-export"):
+    """Record the {workspaceId}/{dataflowId} -> name pairs the exporter saw,
+    so GUID-only dataflow references in report M code resolve automatically
+    from now on. Never fatal - a failure here must not fail an export."""
+    if isinstance(mappings, dict):  # ConvertTo-Json collapses a 1-item array to an object
+        mappings = [mappings]
+    entries = {}
+    for mapping in mappings or []:
+        if not isinstance(mapping, dict):
+            continue
+        key = ll.guid_cache_key(mapping.get("workspace_id"), mapping.get("dataflow_id")) or mapping.get("key")
+        entry = ll.make_guid_cache_entry(mapping.get("dataflow_name"), mapping.get("workspace_name"), source)
+        if key and entry:
+            entries[key] = entry
+    try:
+        return ll.update_guid_cache(entries, overwrite=True)
+    except Exception:
+        return {}
 
 
 def export_all_dataflows(workspace_id, output_dir, archive_previous=True, progress_cb=None, proc_holder=None, timeout_seconds=None):
@@ -99,6 +120,9 @@ def export_all_dataflows(workspace_id, output_dir, archive_previous=True, progre
 
     if result is None:
         return False, "The export script did not report a result (it may have crashed)."
+    saved = persist_guid_mappings(result.get("mappings"))
+    if saved:
+        emit(f"Recorded {len(saved)} dataflow GUID name mapping(s) for future lineage runs.")
     if not result.get("success"):
         return False, result.get("message") or "Export failed."
     return True, {"files": result.get("files", []), "message": result.get("message", "")}

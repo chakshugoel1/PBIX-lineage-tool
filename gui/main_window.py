@@ -109,6 +109,14 @@ class HomeInterface(QWidget):
         self.archive_check.setChecked(cfg["archive_previous_runs"])
         inputs_layout.addWidget(self.archive_check)
 
+        self.guid_lookup_check = CheckBox(
+            "Ask Power BI for the names of unknown dataflow GUIDs (requires sign-in)", self)
+        self.guid_lookup_check.setChecked(cfg["online_guid_lookup"])
+        self.guid_lookup_check.setToolTip(
+            "Only needed when a dataflow is referenced by GUID and cannot be identified "
+            "from the exported dataflow files. Resolved names are saved and reused.")
+        inputs_layout.addWidget(self.guid_lookup_check)
+
         root.addWidget(inputs_card)
 
         # --- Run controls ---------------------------------------------------
@@ -239,6 +247,7 @@ class HomeInterface(QWidget):
             "dataflow_folder": dataflow_folder,
             "output_folder": output_folder,
             "archive_previous_runs": self.archive_check.isChecked(),
+            "online_guid_lookup": self.guid_lookup_check.isChecked(),
             "theme": app_settings.load().get("theme", "dark"),
         })
 
@@ -248,7 +257,8 @@ class HomeInterface(QWidget):
         self.flagged_table.setRowCount(0)
 
         self.worker = PipelineWorker(pbix_path, dataflow_folder, output_folder,
-                                      archive_previous=self.archive_check.isChecked())
+                                      archive_previous=self.archive_check.isChecked(),
+                                      online_guid_lookup=self.guid_lookup_check.isChecked())
         self.worker.progress.connect(self._on_progress)
         self.worker.finished_ok.connect(self._on_finished)
         self.worker.failed.connect(self._on_failed)

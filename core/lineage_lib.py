@@ -67,12 +67,14 @@ def load_guid_cache(path=None):
         raw = json.load(open(path, encoding="utf-8"))
     except Exception:
         return {}
-    return {k: v for k, v in raw.items() if v}
+    # Keys are normalised to lower case because the same GUID pair is cased
+    # differently by the PowerBI REST API and by hand-authored M code.
+    return {str(k).lower(): v for k, v in raw.items() if v}
 
 
 def guid_cache_dataflow_name(guid_cache, key):
     """Return the friendly dataflow name from either supported cache shape."""
-    value = (guid_cache or {}).get(key)
+    value = (guid_cache or {}).get(str(key).lower()) if key else None
     if isinstance(value, dict):
         return value.get("dataflow_name") or value.get("name")
     return value
@@ -80,8 +82,214 @@ def guid_cache_dataflow_name(guid_cache, key):
 
 def guid_cache_workspace_name(guid_cache, key):
     """Return an optional workspace display name from a rich cache entry."""
-    value = (guid_cache or {}).get(key)
+    value = (guid_cache or {}).get(str(key).lower()) if key else None
     return value.get("workspace_name") if isinstance(value, dict) else None
+
+
+def guid_cache_key(workspace_id, dataflow_id):
+    """Canonical '{workspaceId}/{dataflowId}' cache key, lowercased so that
+    GUIDs cased differently by the PowerBI REST API and by M code still match."""
+    if not workspace_id or not dataflow_id:
+        return None
+    return f"{workspace_id}/{dataflow_id}".lower()
+
+
+def make_guid_cache_entry(dataflow_name, workspace_name=None, source=None):
+    """Build a rich cache entry; returns None when there's no name to record."""
+    if not dataflow_name:
+        return None
+    entry = {"dataflow_name": dataflow_name}
+    if workspace_name:
+        entry["workspace_name"] = workspace_name
+    if source:
+        entry["source"] = source
+    return entry
+
+
+def save_guid_cache(cache, path=None):
+    """Write the GUID cache atomically (temp file + replace) so a crash or a
+    concurrent reader never sees a half-written JSON file."""
+    path = path or GUID_CACHE_PATH
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        json.dump(cache, fh, indent=2, ensure_ascii=False, sort_keys=True)
+    os.replace(tmp_path, path)
+
+
+def update_guid_cache(entries, path=None, overwrite=False):
+    """Merge `entries` ({key: entry-or-name}) into the on-disk GUID cache and
+    persist it, so every GUID this tool ever resolves - by any method - is
+    looked up once, ever. Returns the dict of keys actually written."""
+    if not entries:
+        return {}
+    path = path or GUID_CACHE_PATH
+    try:
+        existing = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
+        if not isinstance(existing, dict):
+            existing = {}
+    except Exception:
+        existing = {}
+
+    written = {}
+    for key, value in entries.items():
+        if not key or not value:
+            continue
+        key = key.lower()
+        entry = value if isinstance(value, dict) else make_guid_cache_entry(value)
+        if not entry or not entry.get("dataflow_name"):
+            continue
+        if not overwrite and guid_cache_dataflow_name(existing, key):
+            continue
+        existing[key] = entry
+        written[key] = entry
+
+    if written:
+        try:
+            save_guid_cache(existing, path)
+        except OSError as e:
+            logger.warning("Could not persist GUID cache to %s: %s", path, e)
+            return {}
+    return written
+
+
+# --------------------------------------------------------------------------
+# GUID -> dataflow-name resolution helpers
+# --------------------------------------------------------------------------
+GUID_DATAFLOW_PREFIX = "(dataflowId GUID)"
+
+# A GUID must be identified by the FULL set of entities the report reads from
+# it. Matching on fewer would be unsafe: generic entity names (e.g.
+# "999_PARAMETERS") legitimately exist in dozens of unrelated dataflows.
+MIN_FINGERPRINT_ENTITIES = 2
+
+
+def collect_guid_entity_requests(universe, direct):
+    """Group every entity the report reads from an *unnamed* (GUID-only)
+    dataflow by that dataflow's '{workspaceId}/{dataflowId}' key.
+
+    Entities are picked up both from the GUID-bound query itself and from
+    downstream queries that reference it by name (the common Power Query
+    shape where one query reaches the dataflow and sibling queries then do
+    `Source{[entity="X"]}[Data]`)."""
+    requests = {}
+    guid_query_keys = {}
+
+    for name, info in (direct or {}).items():
+        if not str(info.get("dataflow") or "").startswith(GUID_DATAFLOW_PREFIX):
+            continue
+        key = guid_cache_key(info.get("workspace_id"), info.get("dataflow_id"))
+        if not key:
+            continue
+        guid_query_keys[name] = key
+        bucket = requests.setdefault(key, {
+            "workspace_id": info.get("workspace_id"),
+            "dataflow_id": info.get("dataflow_id"),
+            "entities": set(),
+            "queries": set(),
+        })
+        bucket["queries"].add(name)
+        if info.get("entity"):
+            bucket["entities"].add(info["entity"])
+
+    if not guid_query_keys:
+        return requests
+
+    guid_query_names = list(guid_query_keys)
+    for name in universe.names:
+        if name in guid_query_keys:
+            continue
+        text = universe.get(name) or ""
+        entities = [unquote(t) for t in field_values(text, "entity")]
+        if not entities:
+            continue
+        for referenced in find_names_referenced(text, guid_query_names):
+            bucket = requests[guid_query_keys[referenced]]
+            bucket["queries"].add(name)
+            bucket["entities"].update(e for e in entities if e)
+
+    return requests
+
+
+def fingerprint_match_dataflow(entities, dataflows, min_entities=MIN_FINGERPRINT_ENTITIES):
+    """Identify a dataflow purely from its contents: return the single stem
+    whose published entities are a superset of `entities`.
+
+    Returns (stem, reason). `stem` is None unless exactly one dataflow file
+    contains ALL the requested entities and there are enough of them for the
+    match to be meaningful - an ambiguous or under-specified match is
+    reported as a failure rather than guessed at."""
+    entities = {e for e in (entities or []) if e}
+    usable = {stem: set(df.get("entities") or {}) for stem, df in (dataflows or {}).items()
+              if not df.get("error")}
+
+    def match(wanted):
+        return [stem for stem, published in usable.items() if wanted <= published]
+
+    if len(entities) < min_entities:
+        return None, (f"only {len(entities)} entity name(s) known for this dataflow GUID; "
+                      f"at least {min_entities} are required to identify it safely by content")
+
+    candidates = match(entities)
+    if not candidates:
+        # A requested name that exists in no dataflow at all is more likely a
+        # mis-picked token (e.g. a dataflow name) than a real entity, so retry
+        # without it - the uniqueness and minimum-size bars still apply.
+        known = {e for e in entities if any(e in published for published in usable.values())}
+        if len(known) < min_entities or known == entities:
+            return None, ("no provided dataflow file contains all of these entities: "
+                          + ", ".join(sorted(entities)))
+        candidates = match(known)
+        if not candidates:
+            return None, ("no provided dataflow file contains all of these entities: "
+                          + ", ".join(sorted(known)))
+        entities = known
+    if len(candidates) > 1:
+        return None, (f"ambiguous - {len(candidates)} dataflow files contain all of these entities: "
+                      + ", ".join(sorted(candidates)))
+    return candidates[0], None
+
+
+def resolve_guids_by_fingerprint(universe, direct, dataflows,
+                                 min_entities=MIN_FINGERPRINT_ENTITIES):
+    """Fix 2: name every GUID-only dataflow reference by matching the set of
+    entities the report reads from it against the local dataflow JSON files.
+    Returns (resolved_entries_for_cache, unresolved_reports)."""
+    resolved = {}
+    unresolved = []
+    for key, request in collect_guid_entity_requests(universe, direct).items():
+        stem, reason = fingerprint_match_dataflow(request["entities"], dataflows, min_entities)
+        if stem:
+            raw_name = (dataflows[stem].get("raw") or {}).get("name") or stem
+            resolved[key] = make_guid_cache_entry(raw_name, source="entity-fingerprint")
+            logger.info("Resolved dataflow GUID %s -> '%s' by entity fingerprint (%d entities).",
+                        key, raw_name, len(request["entities"]))
+        else:
+            unresolved.append({"key": key, "workspace_id": request["workspace_id"],
+                               "dataflow_id": request["dataflow_id"],
+                               "entities": sorted(request["entities"]), "reason": reason})
+    return resolved, unresolved
+
+
+def collect_reference_entity_guids(dataflows, guid_cache=None):
+    """GUID pairs from ReferenceEntity `modelId`s that are still unnamed -
+    these can't be fingerprinted (only one entity name is ever known per
+    reference) so they are candidates for the online lookup."""
+    guid_cache = guid_cache or {}
+    pairs = {}
+    for df in (dataflows or {}).values():
+        for entity_meta in (df.get("entities") or {}).values():
+            model_id = entity_meta.get("modelId") or ""
+            if "/" not in model_id:
+                continue
+            ws_id, df_id = model_id.split("/", 1)
+            key = guid_cache_key(ws_id, df_id)
+            if key and not guid_cache_dataflow_name(guid_cache, key) and not guid_cache_dataflow_name(guid_cache, model_id):
+                pairs[key] = {"workspace_id": ws_id, "dataflow_id": df_id}
+    return pairs
+
 
 def classify_unresolved_reason(reason):
     """Map a free-text 'unresolved'/failure reason string to a short,
@@ -476,7 +684,7 @@ def analyze_direct_dataflow_bindings(universe: Universe, global_params: dict, gu
 
         ws_val = resolve_value_token(ws_tokens[0], local_map, universe, global_params) if ws_tokens else None
         df_val = resolve_value_token(df_tokens[0], local_map, universe, global_params) if df_tokens else None
-        cache_key = f"{ws_ids[0]}/{df_ids[0]}" if ws_ids and df_ids else None
+        cache_key = guid_cache_key(ws_ids[0] if ws_ids else None, df_ids[0] if df_ids else None)
         if not df_val and cache_key:
             df_val = guid_cache_dataflow_name(guid_cache, cache_key)
         if not ws_val and cache_key:
@@ -808,9 +1016,10 @@ def extract_dataflow_binding_strict(text, universe: Universe, guid_cache=None):
 
     # Attempt GUID cache lookup with logging
     if not df_val and df_ids and ws_ids:
-        cache_key = f"{ws_ids[0]}/{df_ids[0]}"
-        if cache_key in guid_cache:
-            df_val = guid_cache_dataflow_name(guid_cache, cache_key)
+        cache_key = guid_cache_key(ws_ids[0], df_ids[0])
+        cached_name = guid_cache_dataflow_name(guid_cache, cache_key)
+        if cached_name:
+            df_val = cached_name
             ws_val = ws_val or guid_cache_workspace_name(guid_cache, cache_key)
             logger.debug(f"GUID cache hit: {cache_key} -> '{df_val}'")
         else:

@@ -89,6 +89,17 @@ def _access_request_from_level1(level1, entity):
     }
 
 
+def _guid_identification_note(level1, ctx):
+    """Say why a GUID-only dataflow reference could not be named automatically."""
+    if not str(level1.get("dataflow") or "").startswith(ll.GUID_DATAFLOW_PREFIX):
+        return None
+    key = ll.guid_cache_key(level1.get("workspace_id"), level1.get("dataflow_id"))
+    reason = (ctx.get("guid_resolution") or {}).get("reason_by_key", {}).get(key)
+    if not reason:
+        return None
+    return f"Could not identify this dataflow from the exported files: {reason}."
+
+
 def _format_access_request(access_request):
     """Explain exactly what Power BI workspace/dataflow access is needed."""
     if not access_request:
@@ -122,7 +133,47 @@ def _autofit_main_sheet_columns(ws):
         ws.column_dimensions[column].width = max(minimum, min(maximum, longest_line + 2))
 
 
-def load_everything(pbix_path=None, dataflow_folder=None):
+def _resolve_unknown_dataflow_guids(pbix_universe, direct, dataflows, guid_cache, online_lookup):
+    """Name every dataflow the report only refers to by GUID, then persist
+    what was learned so each GUID is only ever looked up once.
+
+    Offline first (match the dataflow by the set of entities the report reads
+    from it), then - only when explicitly enabled - ask the Power BI service.
+    Returns a summary dict; the caller re-runs binding analysis if anything
+    new was learned."""
+    resolved, unresolved = ll.resolve_guids_by_fingerprint(pbix_universe, direct, dataflows)
+    learned = ll.update_guid_cache(resolved)
+    for key, entry in learned.items():
+        print(f"  Identified dataflow GUID {key} as '{entry['dataflow_name']}' from its entity list.")
+
+    lookup_failures = []
+    if online_lookup:
+        from services import guid_resolver
+
+        pairs = {u["key"]: {"workspace_id": u["workspace_id"], "dataflow_id": u["dataflow_id"]}
+                 for u in unresolved if u["workspace_id"] and u["dataflow_id"]}
+        pairs.update(ll.collect_reference_entity_guids(dataflows, guid_cache))
+        for key in learned:
+            pairs.pop(key, None)
+        if pairs:
+            print(f"  Asking Power BI for the names of {len(pairs)} unknown dataflow GUID(s)...")
+            success, result = guid_resolver.resolve_dataflow_names(list(pairs.values()), progress_cb=lambda l: print(f"  {l}"))
+            if success:
+                learned.update(result["mappings"])
+                lookup_failures = result["failures"]
+            else:
+                lookup_failures = [result]
+
+    still_unresolved = [u for u in unresolved if u["key"] not in learned]
+    return {
+        "learned": learned,
+        "unresolved": still_unresolved,
+        "lookup_failures": lookup_failures,
+        "reason_by_key": {u["key"]: u["reason"] for u in still_unresolved},
+    }
+
+
+def load_everything(pbix_path=None, dataflow_folder=None, online_guid_lookup=False):
     pbix_path = pbix_path or PBIX_PATH
     dataflow_folder = dataflow_folder or DATAFLOW_FOLDER
 
@@ -151,6 +202,12 @@ def load_everything(pbix_path=None, dataflow_folder=None):
     entity_of = ll.build_entity_of(pbix_universe)
 
     dataflows = ll.load_dataflows(dataflow_folder)
+
+    guid_resolution = _resolve_unknown_dataflow_guids(pbix_universe, direct, dataflows, guid_cache, online_guid_lookup)
+    if guid_resolution["learned"]:
+        guid_cache = ll.load_guid_cache()
+        direct, enumerators, unrecognized = ll.analyze_direct_dataflow_bindings(pbix_universe, global_params, guid_cache)
+
     entity_index = ll.build_entity_index(dataflows)
     name_index = ll.build_name_index(dataflows)
 
@@ -170,6 +227,7 @@ def load_everything(pbix_path=None, dataflow_folder=None):
         "entity_index": entity_index,
         "name_index": name_index,
         "guid_cache": guid_cache,
+        "guid_resolution": guid_resolution,
         "used_tables": used_tables,
     }
 
@@ -383,6 +441,9 @@ def _resolve_table_row_inner(table, ctx):
         tag = ACCESS_REQUIRED_TAG if access_request else ll.classify_unresolved_reason(phys.get("reason"))
         remarks = _format_access_request(access_request) if access_request else \
             f"[NEEDS MANUAL REVIEW - {tag}] {phys.get('reason', 'Unresolved.')}"
+        guid_note = _guid_identification_note(lvl1, ctx)
+        if guid_note:
+            remarks += f"\n{guid_note}"
         return {
             "status": "unresolved",
             "entities_used": entities_used,
@@ -459,8 +520,8 @@ def _resolve_table_row_inner(table, ctx):
     }
 
 
-def build_report(pbix_path=None, dataflow_folder=None, cancellation_event=None):
-    ctx = load_everything(pbix_path, dataflow_folder)
+def build_report(pbix_path=None, dataflow_folder=None, cancellation_event=None, online_guid_lookup=False):
+    ctx = load_everything(pbix_path, dataflow_folder, online_guid_lookup=online_guid_lookup)
     model = ctx["model"]
     tables = list(model.tables)
 

@@ -14,6 +14,12 @@ logs/
 # do not publish real client PBIX files, dataflow exports, or generated
 # reports built from them to this public repo.
 *.pbix
+*.pbit
+# A .pbip project keeps its report/model as loose files beside the .pbip.
+*.pbip
+*.Report/
+*.SemanticModel/
+.pbi/
 DTS - CashPlus-Dashboard (1).pbix
 DTS - Classification Pays - BLUE.pbix
 CASHPLUS-DASHBOARD 1.xlsx
