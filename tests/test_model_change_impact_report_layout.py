@@ -88,7 +88,7 @@ class TestPbirFormat:
             "Report/definition/pages/page1/visuals/visChart/visual.json": chart_visual,
             "Report/definition/pages/page1/visuals/visCard/visual.json": card_visual,
             "Report/definition/pages/page1/visuals/visKpi/visual.json": custom_kpi_visual,
-            "Report/definition/pages/page1/visuals/visGroup/visual.json": group_visual,
+            "Report/definition/pages/page1/visuals/grpA/visual.json": group_visual,
         })
 
     def test_detects_pbir_format(self):
@@ -128,7 +128,7 @@ class TestPbirFormat:
     def test_visual_group_excluded_from_visual_semantics(self):
         result = report_layout.build_report_layout(self._build_pbix())
         visuals = {v["visual_id"]: v for v in result["pages"][0]["visuals"]}
-        group = visuals["visGroup"]
+        group = visuals["grpA"]
         assert group["kind"] == "visualGroup"
         assert group["display_name"] == "KPI Row"
         assert group["fields"] == []
@@ -137,6 +137,14 @@ class TestPbirFormat:
         result = report_layout.build_report_layout(self._build_pbix())
         visuals = {v["visual_id"]: v for v in result["pages"][0]["visuals"]}
         assert visuals["visCard"]["parent_group_id"] == "grpA"
+
+    def test_visual_name_source_distinguishes_configured_and_untitled(self):
+        result = report_layout.build_report_layout(self._build_pbix())
+        visuals = {v["visual_id"]: v for v in result["pages"][0]["visuals"]}
+
+        assert visuals["visChart"]["display_name_source"] == "Configured title"
+        assert visuals["visCard"]["display_name"] == "KPI Row"
+        assert visuals["visCard"]["display_name_source"] == "Parent group display name"
 
 
 class TestLegacyFormat:

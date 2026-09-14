@@ -19,6 +19,9 @@ DEFAULTS = {
     "model_change_baseline_pbix": "",
     "model_change_changed_pbix": "",
     "model_change_output_folder": "",
+    "baseline_estimation_pbix": "",
+    "baseline_estimation_output_folder": "",
+    "baseline_estimation_requirements": "",
 }
 
 

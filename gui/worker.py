@@ -17,7 +17,7 @@ from reporting import lineage_report as blr
 from reporting import dataflow_table_report as dtlr
 from services import dataflow_export, fileutils
 from gui import updater
-from model_change_impact import snapshot, report_layout, diff, impact, excel_report
+from model_change_impact import snapshot, report_layout, diff, impact, excel_report, baseline_estimation, history_store
 
 logger = logging.getLogger(__name__)
 
@@ -278,6 +278,57 @@ class ModelChangeImpactWorker(QThread):
             return
         except Exception as e:
             logger.exception("Model Change Impact worker failed")
+            self.failed.emit(str(e))
+            return
+
+        self.finished_ok.emit(summary)
+
+
+class BaselineEstimationWorker(QThread):
+    """Analyzes every model object in one PBIX and generates the workbook.
+
+    When `requirements_path` is provided, the requirements workbook drives the
+    object selection (hybrid mapping) and the output gains the four
+    requirement traceability sheets; every run is recorded in the local
+    change-history store under ``previous_runs/history``.
+    """
+    progress = Signal(str)
+    finished_ok = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(self, pbix_path, output_path, parent=None, requirements_path=None):
+        super().__init__(parent)
+        self.pbix_path = pbix_path
+        self.output_path = output_path
+        self.requirements_path = requirements_path
+
+    def run(self):
+        try:
+            self.progress.emit("Reading all model objects...")
+            model_snapshot = snapshot.build_snapshot(self.pbix_path)
+            self.progress.emit("Reading all report pages, visuals, and field bindings...")
+            layout = report_layout.build_report_layout(self.pbix_path)
+            requirements_path = self.requirements_path or None
+            if requirements_path:
+                self.progress.emit("Loading requirements and mapping them to model objects...")
+            history_db_path = history_store.default_db_path(
+                os.path.dirname(os.path.abspath(self.output_path)))
+            self.progress.emit("Tracing every model object to dependent measures and visuals...")
+            summary = baseline_estimation.build_report(
+                model_snapshot,
+                layout,
+                self.output_path,
+                requirements_path=requirements_path,
+                history_db_path=history_db_path,
+            )
+        except PermissionError as e:
+            self.failed.emit(
+                "The report file is open in another program (likely Excel) and could not be "
+                f"overwritten. Please close it and try again.\n\n{e}"
+            )
+            return
+        except Exception as e:
+            logger.exception("Baseline Estimation worker failed")
             self.failed.emit(str(e))
             return
 

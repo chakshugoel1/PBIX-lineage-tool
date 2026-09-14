@@ -79,6 +79,7 @@ def compare_report_layouts(baseline_layout, changed_layout):
                 rows.append({
                     "grain": "Visual",
                     "name": visual_id,
+                    "page_id": after_page.get("page_id") or before_page.get("page_id") or page_id,
                     "page": after_page.get("display_name") or page_id,
                     "changed": "Yes",
                     "changed_level": "Visual",
@@ -94,6 +95,7 @@ def compare_report_layouts(baseline_layout, changed_layout):
                 rows.append({
                     "grain": "Visual",
                     "name": visual_id,
+                    "page_id": after_page.get("page_id") or page_id,
                     "page": after_page.get("display_name") or page_id,
                     "changed": "Yes",
                     "changed_level": "Visual",
@@ -214,6 +216,18 @@ def _visual_title(objects):
     return None
 
 
+def _display_name_metadata(title, visual_display_name, root_display_name, parent_group_display_name=None):
+    if title:
+        return title, "Configured title"
+    if visual_display_name:
+        return visual_display_name, "Visual display name"
+    if root_display_name:
+        return root_display_name, "Container display name"
+    if parent_group_display_name:
+        return parent_group_display_name, "Parent group display name"
+    return None, "Not configured"
+
+
 # ---------------------------------------------------------------------------
 # PBIR (modern multi-file) format
 # ---------------------------------------------------------------------------
@@ -243,18 +257,27 @@ def _parse_pbir(zf, names):
 def _parse_pbir_visuals(zf, names, page_id):
     prefix = f"Report/definition/pages/{page_id}/visuals/"
     suffix = "/visual.json"
-    visuals = []
+    visual_parts = []
     for name in sorted(names):
         if not (name.startswith(prefix) and name.endswith(suffix)):
             continue
         visual_id = name[len(prefix):-len(suffix)]
         if "/" in visual_id:
             continue  # unexpected nested structure - skip rather than misparse
-        visuals.append(_build_pbir_visual(visual_id, _read_json(zf, name)))
+        visual_parts.append((visual_id, _read_json(zf, name)))
+    group_display_names = {
+        visual_id: part.get("visualGroup", {}).get("displayName")
+        for visual_id, part in visual_parts
+        if part.get("visualGroup", {}).get("displayName")
+    }
+    visuals = []
+    for visual_id, visual_json in visual_parts:
+        visuals.append(_build_pbir_visual(visual_id, visual_json, group_display_names))
     return visuals
 
 
-def _build_pbir_visual(visual_id, visual_json):
+def _build_pbir_visual(visual_id, visual_json, group_display_names=None):
+    group_display_names = group_display_names or {}
     parent_group_id = visual_json.get("parentGroupName")
     if "visual" in visual_json:
         v = visual_json["visual"]
@@ -265,9 +288,16 @@ def _build_pbir_visual(visual_id, visual_json):
             for proj in role_obj.get("projections", []):
                 for ref in _extract_field_refs(proj.get("field", {})):
                     fields.append({**ref, "role": role})
+        display_name, display_name_source = _display_name_metadata(
+            _visual_title(v.get("visualContainerObjects")),
+            v.get("displayName"),
+            visual_json.get("displayName"),
+            group_display_names.get(parent_group_id),
+        )
         return {
             "visual_id": visual_id,
-            "display_name": _visual_title(v.get("visualContainerObjects")) or v.get("displayName") or visual_json.get("displayName"),
+            "display_name": display_name,
+            "display_name_source": display_name_source,
             "kind": "visual",
             "visual_type": visual_type,
             "parent_group_id": parent_group_id,
@@ -339,6 +369,14 @@ def _legacy_visual_display_name(config):
     return config.get("displayName") or config.get("name")
 
 
+def _legacy_visual_display_metadata(config):
+    return _display_name_metadata(
+        _visual_title(config.get("singleVisual", {}).get("vcObjects")),
+        config.get("displayName"),
+        config.get("name"),
+    )
+
+
 def _build_legacy_visual(vc):
     visual_id = vc.get("name", "")
     parent_group_id = vc.get("parentGroupName")
@@ -381,9 +419,12 @@ def _build_legacy_visual(vc):
             if ref:
                 fields.append({**ref, "role": role})
 
+    display_name, display_name_source = _legacy_visual_display_metadata(config)
+
     return {
         "visual_id": visual_id,
-        "display_name": _legacy_visual_display_name(config),
+        "display_name": display_name,
+        "display_name_source": display_name_source,
         "kind": "visual",
         "visual_type": visual_type,
         "parent_group_id": parent_group_id,

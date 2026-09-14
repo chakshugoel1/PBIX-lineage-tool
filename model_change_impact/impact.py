@@ -132,6 +132,7 @@ def _build_field_index(report_layout):
                     "page_display_name": page.get("display_name"),
                     "visual_id": visual.get("visual_id"),
                     "visual_display_name": visual.get("display_name"),
+                    "visual_display_name_source": visual.get("display_name_source"),
                     "visual_type": visual.get("visual_type"),
                     "kpi_classification": visual.get("kpi_classification"),
                 })

@@ -161,6 +161,40 @@ dependency scan is heuristic, and relationship impact is deliberately broad
 where filter propagation cannot be determined precisely; results should be
 reviewed before production deployment.
 
+## Baseline Estimation
+
+The **Baseline Estimation** tab estimates the impact of planned model changes
+before development starts. It analyzes one existing PBIX file only; no changed
+or comparison file is required.
+
+1. Select the PBIX and output folder.
+2. Click **Generate Baseline Impact**.
+3. Filter the generated Excel tables to the objects relevant to the planned
+   development.
+
+The generated `Baseline_Estimation_<pbix name>.xlsx` analyzes every table,
+measure, column, and relationship in the PBIX and contains four filterable
+sheets:
+
+- `Object Summary` — one row per model object with direct, dependency-chain,
+  total unique visual, KPI visual, affected-page, and dependent-object counts.
+- `Impact Summary` — the same columns and row grain as Version 2: one row per
+  model object and affected visual. Objects with no matched visual retain one
+  `No visual binding found` row.
+- `Model Inventory` — every model object with its DAX/M definition, data type,
+  format, visibility, calculation, and relationship metadata where applicable.
+- `Visual Inventory` — one row per visual field binding, including page,
+  visual name, visual ID/type, KPI classification, bound object, and role.
+
+Configured visual titles are used as names. When a visual is genuinely
+untitled, the report says so explicitly and generates a useful label from its
+visual type and bound object instead of silently displaying its internal ID as
+the name.
+
+Measure and calculated-column dependencies are inferred from DAX references.
+Table and relationship selections deliberately use the same broad impact rule
+as Version 2 because they can alter filter propagation across many columns.
+
 ## Manual-override data files (travel with the repo, not machine-specific)
 
 - `guid_dataflow_names.json` — resolves cross-workspace dataflow references
@@ -282,7 +316,7 @@ the Home tab's reports), never silently overwritten in place.
 | `core/` | M-code parsing and multi-level lineage resolution engine |
 | `reporting/` | Main lineage, companion lineage, transformation, and comparison workbook generation |
 | `services/` | Shared file operations and PowerShell dataflow export integration |
-| `model_change_impact/` | Version 2 PBIX comparison, dependency analysis, visual impact, and Excel reporting |
+| `model_change_impact/` | Version 2 comparison plus one-PBIX baseline estimation, dependency analysis, visual impact, and Excel reporting |
 | `cli/` | Standalone inspection command-line interface |
 | `powershell/` | PowerShell scripts invoked by Python services |
 | `tests/` | Automated tests and pytest configuration |

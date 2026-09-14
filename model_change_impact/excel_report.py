@@ -141,7 +141,7 @@ def _build_impact_summary_rows(diff_result, impact_result, visual_rows, actual_r
         actual_report_changes = []
 
     actual_changed_visuals = {
-        (row["page"], row["name"])
+        (row.get("page_id") or row.get("page"), row.get("name"))
         for row in actual_report_changes
     }
 
@@ -177,23 +177,44 @@ def _build_impact_summary_rows(diff_result, impact_result, visual_rows, actual_r
             for visual in impacted_visuals:
                 page_name = visual.get("page_display_name") or visual.get("page_id") or ""
                 kpi_confidence = visual.get("kpi_classification") or ""
+                impact_basis = _impact_basis(kind, record["change_type"], visual["matched_via"])
                 rows.append({
                     "Changed Object Type": grain_name,
                     "Changed Object": changed_object,
                     "Change Type": record["change_type"].title(),
                     "Affected Visual ID": visual.get("visual_id") or "",
-                    "Affected Visual Name": visual.get("visual_display_name") or visual.get("visual_id") or "",
+                    "Affected Visual Name": _effective_visual_name(visual),
                     "Visual Type": visual.get("visual_type") or "",
                     "Page Name": page_name,
                     "Is KPI": "Yes" if kpi_confidence in ("certain", "heuristic") else "No",
                     "KPI Confidence": kpi_confidence,
-                    "Impact Basis": _impact_basis(kind, record["change_type"], visual["matched_via"]),
-                    "Actual Report Change": "Yes" if (page_name, visual.get("visual_id")) in actual_changed_visuals else "No",
+                    "Impact Basis": impact_basis,
+                    "Actual Report Change": _actual_report_change(visual, impact_basis, actual_changed_visuals),
                 })
 
     return sorted(rows, key=lambda row: (
         row["Changed Object Type"], row["Changed Object"], row["Page Name"], row["Affected Visual ID"],
     ))
+
+
+def _actual_report_change(visual, impact_basis, actual_changed_visuals):
+    visual_key = (visual.get("page_id"), visual.get("visual_id"))
+    if visual_key in actual_changed_visuals:
+        return "Yes"
+    if impact_basis in ("Direct", "Direct (references removed object)", "Dependency chain"):
+        return "Yes"
+    return "No"
+
+
+def _effective_visual_name(visual):
+    """Use configured metadata, or an explicitly generated untitled label."""
+    if visual.get("visual_display_name"):
+        return visual["visual_display_name"]
+    visual_type = visual.get("visual_type") or "visual"
+    matched = visual.get("matched_object") or {}
+    if matched.get("table") and matched.get("name"):
+        return f"(Untitled {visual_type}) {matched['table']}[{matched['name']}]"
+    return f"(Untitled {visual_type}) [ID: {visual.get('visual_id') or 'unknown'}]"
 
 
 def _write_impact_summary_sheet(ws, rows):

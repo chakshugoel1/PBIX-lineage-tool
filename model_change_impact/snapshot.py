@@ -66,7 +66,7 @@ def _measure_raw_sql_enrichment(model):
         db = model._metadata.source._db
         df = db.query(
             "SELECT t.Name AS TableName, m.Name AS MeasureName, "
-            "m.FormatString, m.IsHidden, m.KPIID, m.LineageTag "
+            "m.FormatString, m.IsHidden, m.KPIID, m.LineageTag, m.ModifiedTime "
             "FROM Measure m JOIN [Table] t ON m.TableID = t.ID;"
         )
     except Exception:
@@ -80,6 +80,7 @@ def _measure_raw_sql_enrichment(model):
             "is_hidden": bool(_val(row, "IsHidden", False)),
             "kpi_id": _val(row, "KPIID"),
             "lineage_tag": _val(row, "LineageTag"),
+            "modified_time": _val(row, "ModifiedTime"),
         }
     return out
 
@@ -97,7 +98,7 @@ def _column_enrichment(model):
         return {}
     out = {}
     for _, row in df.iterrows():
-        out[(str(row["TableName"]), str(row["Name"]))] = {
+        entry = {
             "data_type": _data_type_name(_val(row, "DataType")),
             "format_string": _val(row, "FormatString"),
             "is_hidden": bool(_val(row, "IsHidden", False)),
@@ -105,6 +106,9 @@ def _column_enrichment(model):
             "display_folder": _val(row, "DisplayFolder"),
             "lineage_tag": _val(row, "LineageTag"),
         }
+        if _has_col(df, "ModifiedTime"):
+            entry["modified_time"] = _val(row, "ModifiedTime")
+        out[(str(row["TableName"]), str(row["Name"]))] = entry
     return out
 
 
@@ -119,11 +123,14 @@ def _table_enrichment(model):
         return {}
     out = {}
     for _, row in df.iterrows():
-        out[str(row["Name"])] = {
+        entry = {
             "is_hidden": bool(_val(row, "IsHidden", False)),
             "description": _val(row, "Description"),
             "lineage_tag": _val(row, "LineageTag"),
         }
+        if _has_col(df, "ModifiedTime"):
+            entry["modified_time"] = _val(row, "ModifiedTime")
+        out[str(row["Name"])] = entry
     return out
 
 
@@ -197,6 +204,7 @@ def _build_tables(model, calculated_table_names, calculated_column_expr,
                     "description": extra.get("description"),
                     "display_folder": extra.get("display_folder"),
                     "lineage_tag": extra.get("lineage_tag"),
+                    "modified_time": extra.get("modified_time"),
                 })
             columns.sort(key=lambda c: c["name"])
             t_extra = table_extra.get(table_name, {})
@@ -206,6 +214,7 @@ def _build_tables(model, calculated_table_names, calculated_column_expr,
                 "is_hidden": t_extra.get("is_hidden", False),
                 "description": t_extra.get("description"),
                 "lineage_tag": t_extra.get("lineage_tag"),
+                "modified_time": t_extra.get("modified_time"),
                 "columns": columns,
             }
     else:
@@ -219,6 +228,7 @@ def _build_tables(model, calculated_table_names, calculated_column_expr,
                 "is_hidden": False,
                 "description": None,
                 "lineage_tag": None,
+                "modified_time": None,
                 "columns": [],
             }
     return tables
@@ -239,6 +249,7 @@ def _build_measures(model, measure_extra):
                 "is_hidden": extra.get("is_hidden", False),
                 "lineage_tag": extra.get("lineage_tag"),
                 "kpi_id": extra.get("kpi_id"),
+                "modified_time": extra.get("modified_time"),
             }
     return measures
 

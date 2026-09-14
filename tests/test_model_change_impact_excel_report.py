@@ -143,6 +143,7 @@ def test_impact_summary_has_actual_report_change_and_filter_columns(tmp_path):
     assert measure_kpi_row[7] == "Yes"
     assert measure_kpi_row[8] == "heuristic"
     assert measure_kpi_row[9] == "Direct"
+    assert measure_kpi_row[10] == "Yes"
 
 
 def test_summary_sheet_has_file_names_and_counts(tmp_path):
@@ -182,6 +183,20 @@ def test_playwright_input_severity_reflects_kpi_classification(tmp_path):
     # visKpiCustom is directly bound to the modified measure and only heuristically
     # classified as a KPI (custom visual type name) -> "Medium" (direct basis, not certain KPI).
     assert by_visual["visKpiCustom"][7] == "Yes"
+
+
+def test_actual_report_change_is_yes_for_dependency_impacted_visual(tmp_path):
+    wb = openpyxl.load_workbook(_build_report(tmp_path))
+    ws = wb["Impact Summary"]
+    rows = list(ws.iter_rows(min_row=2, values_only=True))
+
+    dependency_row = next(r for r in rows if r[1] == "_Measures[Total Sales]" and r[3] == "visKpi")
+    broad_row = next(r for r in rows if r[0] == "Relationship" and r[3] == "visChart")
+
+    assert dependency_row[9] == "Dependency chain"
+    assert dependency_row[10] == "Yes"
+    assert broad_row[9] == "Broad (table/relationship-level)"
+    assert broad_row[10] == "No"
 
 
 def test_manual_review_flags_relationship_change_and_heuristic_kpi(tmp_path):

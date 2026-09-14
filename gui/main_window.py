@@ -21,7 +21,10 @@ from qfluentwidgets import (
 )
 
 from gui import settings as app_settings
-from gui.worker import PipelineWorker, UpdateWorker, UpdateCheckWorker, DataflowExportWorker, ModelChangeImpactWorker
+from gui.worker import (
+    PipelineWorker, UpdateWorker, UpdateCheckWorker, DataflowExportWorker,
+    ModelChangeImpactWorker, BaselineEstimationWorker,
+)
 from gui import updater
 from version import __version__
 import config
@@ -650,6 +653,214 @@ class ModelChangeImpactInterface(QWidget):
             os.startfile(output_folder)
 
 
+class BaselineEstimationInterface(QWidget):
+    """Estimates pre-development impact for every object in one PBIX."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("BaselineEstimationInterface")
+        self.worker = None
+        self._last_output_path = None
+
+        cfg = app_settings.load()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget(self)
+        scroll.setWidget(content)
+        root = QVBoxLayout(content)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(14)
+
+        root.addWidget(TitleLabel("Baseline Estimation", self))
+        root.addWidget(BodyLabel(
+            "Analyzes every table, measure, column, and relationship in one PBIX, then "
+            "maps each object to affected visuals, pages, and KPI cards.", self))
+
+        inputs_card = CardWidget(self)
+        inputs_layout = QVBoxLayout(inputs_card)
+        inputs_layout.setContentsMargins(16, 16, 16, 16)
+        inputs_layout.addWidget(StrongBodyLabel("1. Select File", self))
+
+        self.pbix_edit = LineEdit(self)
+        self.pbix_edit.setText(cfg["baseline_estimation_pbix"])
+        self.pbix_edit.setPlaceholderText("Path to the existing .pbix file")
+        inputs_layout.addLayout(self._row("PBIX file:", self.pbix_edit, self._browse_pbix))
+
+        self.output_edit = LineEdit(self)
+        self.output_edit.setText(cfg["baseline_estimation_output_folder"])
+        self.output_edit.setPlaceholderText("Defaults to the PBIX file's folder")
+        inputs_layout.addLayout(self._row("Output folder:", self.output_edit, self._browse_output))
+
+        self.requirements_edit = LineEdit(self)
+        self.requirements_edit.setText(cfg.get("baseline_estimation_requirements", ""))
+        self.requirements_edit.setPlaceholderText(
+            "Optional: requirements.xlsx with a 'Requirements' sheet (drives requirement traceability)")
+        inputs_layout.addLayout(self._row(
+            "Requirements Excel:", self.requirements_edit, self._browse_requirements))
+        root.addWidget(inputs_card)
+
+        run_row = QHBoxLayout()
+        self.generate_button = PrimaryPushButton(FIF.SEARCH_MIRROR, "Generate Baseline Impact", self)
+        self.generate_button.clicked.connect(self._on_generate_clicked)
+        run_row.addWidget(self.generate_button)
+        run_row.addStretch(1)
+        self.toggle_log_button = PushButton("Show Log", self)
+        self.toggle_log_button.clicked.connect(self._toggle_log)
+        run_row.addWidget(self.toggle_log_button)
+        root.addLayout(run_row)
+
+        self.progress_bar = IndeterminateProgressBar(self)
+        self.progress_bar.setVisible(False)
+        root.addWidget(self.progress_bar)
+
+        self.log_view = TextEdit(self)
+        self.log_view.setReadOnly(True)
+        self.log_view.setFixedHeight(120)
+        self.log_view.setVisible(False)
+        root.addWidget(self.log_view)
+
+        root.addWidget(StrongBodyLabel("2. Results", self))
+        results_row = QHBoxLayout()
+        self.objects_card = StatusCard("Model Objects", "#D9D9D9", self)
+        self.rows_card = StatusCard("Impact Rows", "#D9D9D9", self)
+        self.visuals_card = StatusCard("Visuals Impacted", "#FFF200", self)
+        self.kpis_card = StatusCard("KPI Visuals", "#C6E0B4", self)
+        self.pages_card = StatusCard("Pages Affected", "#D9D9D9", self)
+        self.requirements_card = StatusCard("Requirements Mapped", "#B4C6E7", self)
+        results_row.addWidget(self.objects_card)
+        results_row.addWidget(self.rows_card)
+        results_row.addWidget(self.visuals_card)
+        results_row.addWidget(self.kpis_card)
+        results_row.addWidget(self.pages_card)
+        results_row.addWidget(self.requirements_card)
+        root.addLayout(results_row)
+
+        actions_row = QHBoxLayout()
+        self.open_report_button = PushButton(FIF.DOCUMENT, "Open Excel Report", self)
+        self.open_report_button.clicked.connect(lambda: self._open_file(self._last_output_path))
+        self.open_report_button.setEnabled(False)
+        self.open_folder_button = PushButton(FIF.FOLDER, "Open Output Folder", self)
+        self.open_folder_button.clicked.connect(self._open_output_folder)
+        self.open_folder_button.setEnabled(False)
+        actions_row.addWidget(self.open_report_button)
+        actions_row.addWidget(self.open_folder_button)
+        actions_row.addStretch(1)
+        root.addLayout(actions_row)
+        root.addStretch(1)
+
+    def _row(self, label_text, line_edit, browse_slot):
+        row = QHBoxLayout()
+        row.addWidget(BodyLabel(label_text, self), stretch=0)
+        row.addWidget(line_edit, stretch=1)
+        button = PushButton(FIF.FOLDER, "Browse", self)
+        button.clicked.connect(browse_slot)
+        row.addWidget(button, stretch=0)
+        return row
+
+    def _browse_pbix(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select PBIX file", "", "Power BI Files (*.pbix)")
+        if path:
+            self.pbix_edit.setText(path)
+            if not self.output_edit.text().strip():
+                self.output_edit.setText(os.path.dirname(path))
+
+    def _browse_output(self):
+        path = QFileDialog.getExistingDirectory(self, "Select output folder")
+        if path:
+            self.output_edit.setText(path)
+
+    def _browse_requirements(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select requirements Excel file", "", "Excel Files (*.xlsx)")
+        if path:
+            self.requirements_edit.setText(path)
+
+    def _toggle_log(self):
+        visible = not self.log_view.isVisible()
+        self.log_view.setVisible(visible)
+        self.toggle_log_button.setText("Hide Log" if visible else "Show Log")
+
+    def _on_generate_clicked(self):
+        pbix_path = self.pbix_edit.text().strip()
+        output_folder = self.output_edit.text().strip() or (os.path.dirname(pbix_path) if pbix_path else "")
+        requirements_path = self.requirements_edit.text().strip()
+        if not pbix_path or not os.path.isfile(pbix_path):
+            InfoBar.error("Missing PBIX file", "Please select a valid .pbix file.", parent=self,
+                          position=InfoBarPosition.TOP)
+            return
+        if not output_folder or not os.path.isdir(output_folder):
+            InfoBar.error("Missing output folder", "Please select a valid output folder.", parent=self,
+                          position=InfoBarPosition.TOP)
+            return
+        if requirements_path and not os.path.isfile(requirements_path):
+            InfoBar.error("Missing requirements file",
+                          "Please select a valid requirements .xlsx file, or clear the field.",
+                          parent=self, position=InfoBarPosition.TOP)
+            return
+
+        cfg = app_settings.load()
+        cfg["baseline_estimation_pbix"] = pbix_path
+        cfg["baseline_estimation_output_folder"] = output_folder
+        cfg["baseline_estimation_requirements"] = requirements_path
+        app_settings.save(cfg)
+
+        output_path = os.path.join(
+            output_folder, f"Baseline_Estimation_{config.pbix_stem(pbix_path)}.xlsx")
+        self.generate_button.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.log_view.clear()
+        self.open_report_button.setEnabled(False)
+        self.open_folder_button.setEnabled(False)
+        self.worker = BaselineEstimationWorker(
+            pbix_path, output_path, self, requirements_path=requirements_path or None)
+        self.worker.progress.connect(self.log_view.append)
+        self.worker.finished_ok.connect(self._on_estimation_finished)
+        self.worker.failed.connect(self._on_failed)
+        self.worker.start()
+
+    def _on_estimation_finished(self, summary):
+        self.generate_button.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self._last_output_path = summary["output_path"]
+        self.objects_card.set_value(summary["model_objects"])
+        self.rows_card.set_value(summary["impact_rows"])
+        self.visuals_card.set_value(summary["impacted_visuals"])
+        self.kpis_card.set_value(summary["kpi_visuals"])
+        self.pages_card.set_value(summary["affected_pages"])
+        self.requirements_card.set_value(summary.get("requirements", 0))
+        self.open_report_button.setEnabled(True)
+        self.open_folder_button.setEnabled(True)
+        message = (f"{summary['model_objects']} objects analyzed; "
+                   f"{summary['impacted_visuals']} unique visual(s) affected.")
+        if summary.get("requirements"):
+            message += (f" {summary['requirements']} active requirement(s) mapped to "
+                        f"{summary.get('mapped_objects', 0)} model objects.")
+        InfoBar.success(
+            "Estimation complete", message,
+            parent=self, position=InfoBarPosition.TOP, duration=5000,
+        )
+
+    def _on_failed(self, message):
+        self.generate_button.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        InfoBar.error("Baseline estimation failed", message, parent=self,
+                      position=InfoBarPosition.TOP, duration=8000)
+
+    def _open_file(self, path):
+        if path and os.path.exists(path):
+            os.startfile(path)
+
+    def _open_output_folder(self):
+        output_folder = self.output_edit.text().strip()
+        if output_folder and os.path.isdir(output_folder):
+            os.startfile(output_folder)
+
+
 class AboutInterface(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -746,11 +957,13 @@ class MainWindow(FluentWindow):
         self.home_interface = HomeInterface(self)
         self.dataflow_export_interface = DataflowExportInterface(self)
         self.model_change_impact_interface = ModelChangeImpactInterface(self)
+        self.baseline_estimation_interface = BaselineEstimationInterface(self)
         self.about_interface = AboutInterface(self)
 
         self.addSubInterface(self.home_interface, FIF.HOME, "Run")
         self.addSubInterface(self.dataflow_export_interface, FIF.CLOUD_DOWNLOAD, "Dataflow Export")
         self.addSubInterface(self.model_change_impact_interface, FIF.SEARCH_MIRROR, "Model Change Impact")
+        self.addSubInterface(self.baseline_estimation_interface, FIF.FILTER, "Baseline Estimation")
         self.addSubInterface(self.about_interface, FIF.INFO, "About", NavigationItemPosition.BOTTOM)
 
     def _size_to_screen(self):
@@ -796,6 +1009,7 @@ class MainWindow(FluentWindow):
             self.home_interface.worker,
             self.dataflow_export_interface.worker,
             self.model_change_impact_interface.worker,
+            self.baseline_estimation_interface.worker,
         ):
             if worker is not None and worker.isRunning():
                 if hasattr(worker, "request_cancel"):
