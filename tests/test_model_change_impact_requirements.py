@@ -1,5 +1,5 @@
 """Tests for model_change_impact.requirements - the fixed requirements.xlsx
-input contract (sheet name, mandatory/recommended columns, validation)."""
+input contract (sheet name, mandatory/recommended columns, scope columns)."""
 import datetime
 
 import pytest
@@ -9,7 +9,8 @@ from model_change_impact import requirements as req_module
 
 ALL_HEADERS = [
     "Requirement ID", "Title", "Status", "Description", "Priority", "Raised Date",
-    "Business Owner", "Business Area", "Expected Change Date", "Seed Objects", "Notes",
+    "Business Owner", "Business Area", "Expected Change Date",
+    "Impacted Pages", "Impacted Visuals", "Impacted Visual IDs", "Notes",
 ]
 
 
@@ -26,16 +27,17 @@ def _write_workbook(path, headers, rows, sheet_name="Requirements"):
 def test_load_full_row(tmp_path):
     path = tmp_path / "requirements.xlsx"
     _write_workbook(path, ALL_HEADERS, [[
-        "R-1", "Revenue restatement", "Approved", "Restate revenue measures",
+        "R-1", "Headcount card rework", "Approved", "Update the headcount KPI cards",
         "Critical", datetime.date(2026, 9, 1), "Alice", "Finance",
-        datetime.date(2026, 10, 1), "measure:Total Revenue", "first note",
+        datetime.date(2026, 10, 1), "CXO, DU Head", "HeadcountPrevYearvalue",
+        "6897a41505887576b092", "first note",
     ]])
     requirements, warnings = req_module.load_requirements(path)
     assert warnings == []
     assert len(requirements) == 1
     req = requirements[0]
     assert req["id"] == "R-1"
-    assert req["title"] == "Revenue restatement"
+    assert req["title"] == "Headcount card rework"
     assert req["status"] == "Approved"
     assert req["active"] is True
     assert req["priority"] == "Critical"
@@ -43,8 +45,19 @@ def test_load_full_row(tmp_path):
     assert req["expected_change_date"] == "2026-10-01"
     assert req["business_owner"] == "Alice"
     assert req["business_area"] == "Finance"
-    assert req["seed_objects"] == "measure:Total Revenue"
+    assert req["impacted_pages"] == "CXO, DU Head"
+    assert req["impacted_visuals"] == "HeadcountPrevYearvalue"
+    assert req["impacted_visual_ids"] == "6897a41505887576b092"
     assert req["notes"] == "first note"
+
+
+def test_scope_columns_are_optional(tmp_path):
+    path = tmp_path / "requirements.xlsx"
+    _write_workbook(path, ["Requirement ID", "Title", "Status"], [["R-1", "T", "Proposed"]])
+    requirements, _warnings = req_module.load_requirements(path)
+    assert requirements[0]["impacted_pages"] == ""
+    assert requirements[0]["impacted_visuals"] == ""
+    assert requirements[0]["impacted_visual_ids"] == ""
 
 
 def test_missing_sheet_fails(tmp_path):
@@ -85,7 +98,7 @@ def test_empty_mandatory_cell_fails_with_row_number(tmp_path):
 def test_unknown_column_warns_and_is_ignored(tmp_path):
     path = tmp_path / "requirements.xlsx"
     _write_workbook(path, ALL_HEADERS + ["Jira Link"], [
-        ["R-1", "Title", "Proposed", "", "", "", "", "", "", "", "", "ABC-123"],
+        ["R-1", "Title", "Proposed", "", "", "", "", "", "", "", "", "", "ABC-123"],
     ])
     requirements, warnings = req_module.load_requirements(path)
     assert any("Jira Link" in warning for warning in warnings)

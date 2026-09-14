@@ -3,8 +3,15 @@
 Fixed input contract (agreed design): a worksheet named ``Requirements`` with
 the header in row 1. Mandatory columns: ``Requirement ID``, ``Title``,
 ``Status``; recommended: ``Description``, ``Priority``, ``Raised Date``;
-optional: ``Business Owner``, ``Business Area``, ``Expected Change Date``,
-``Seed Objects``, ``Notes``. Extra columns are ignored with a warning.
+optional context: ``Business Owner``, ``Business Area``,
+``Expected Change Date``, ``Notes``. Extra columns are ignored with a warning.
+
+Impact scope is declared at the report grain a user can actually see -
+comma-separated names in the optional columns ``Impacted Pages``,
+``Impacted Visuals`` and ``Impacted Visual IDs`` (as shown in the Baseline
+Estimation Visual Inventory sheet). Model objects (measures/tables/columns)
+are never user input: the tool derives them from the mapped visuals' field
+bindings plus DAX dependency expansion.
 
 ``load_requirements()`` is the only entry point most callers need: it returns
 ``(requirements, warnings)`` and raises :class:`RequirementsError` for
@@ -20,9 +27,10 @@ SHEET_NAME = "Requirements"
 MANDATORY_COLUMNS = ("Requirement ID", "Title", "Status")
 RECOMMENDED_COLUMNS = ("Description", "Priority", "Raised Date")
 OPTIONAL_COLUMNS = (
-    "Business Owner", "Business Area", "Expected Change Date", "Seed Objects", "Notes",
+    "Business Owner", "Business Area", "Expected Change Date", "Notes",
 )
-KNOWN_COLUMNS = MANDATORY_COLUMNS + RECOMMENDED_COLUMNS + OPTIONAL_COLUMNS
+SCOPE_COLUMNS = ("Impacted Pages", "Impacted Visuals", "Impacted Visual IDs")
+KNOWN_COLUMNS = MANDATORY_COLUMNS + RECOMMENDED_COLUMNS + OPTIONAL_COLUMNS + SCOPE_COLUMNS
 
 STATUS_VALUES = ("Proposed", "Approved", "In Progress", "Done", "Cancelled")
 INACTIVE_STATUSES = ("Done", "Cancelled")
@@ -39,7 +47,9 @@ _FIELD_BY_COLUMN = {
     "Business Owner": "business_owner",
     "Business Area": "business_area",
     "Expected Change Date": "expected_change_date",
-    "Seed Objects": "seed_objects",
+    "Impacted Pages": "impacted_pages",
+    "Impacted Visuals": "impacted_visuals",
+    "Impacted Visual IDs": "impacted_visual_ids",
     "Notes": "notes",
 }
 _DATE_FIELDS = ("raised_date", "expected_change_date")
@@ -54,7 +64,9 @@ def load_requirements(path):
 
     Each requirement is a plain dict with keys: id, title, status, active,
     description, priority, raised_date, business_owner, business_area,
-    expected_change_date, seed_objects, notes, row_number.
+    expected_change_date, impacted_pages, impacted_visuals,
+    impacted_visual_ids, notes, row_number. The three impacted_* fields are
+    comma-separated name/ID strings, exactly as entered.
     """
     warnings = []
     try:
@@ -171,7 +183,9 @@ def _build_requirement(values, row_number, warnings):
         "expected_change_date": _date_text(
             values.get("expected_change_date"), row_number, "Expected Change Date", warnings,
         ),
-        "seed_objects": values.get("seed_objects", ""),
+        "impacted_pages": values.get("impacted_pages", ""),
+        "impacted_visuals": values.get("impacted_visuals", ""),
+        "impacted_visual_ids": values.get("impacted_visual_ids", ""),
         "notes": values.get("notes", ""),
         "row_number": row_number,
     }

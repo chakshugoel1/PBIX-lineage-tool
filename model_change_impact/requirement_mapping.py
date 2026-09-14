@@ -1,22 +1,25 @@
-"""Hybrid requirement-to-object mapping.
+"""Requirement-to-object mapping at the report grain users can point at.
 
-Three mapping legs, by decreasing trust:
+The requirements workbook declares scope via page names, visual display
+names, and visual IDs (the same names shown in the Baseline Estimation
+Visual Inventory sheet) - never model internals. Resolution order:
 
-1. Explicit tags inside the PBIX: ``[R-104]`` in a visual's title/display
-   name, ``REQ:R-104`` (comma-separated for several) in a measure/table/
-   column description. -> ``Tag`` / High confidence.
-2. The requirements file's ``Seed Objects`` column (``measure:Name``,
-   ``table:Name``, ``column:Table[Col]``, ``visual:Name``, ``page:Name``).
-   -> ``Seed`` / High confidence.
-3. Keyword inference: significant tokens from the requirement Title +
-   Description matched against object names and visual display names.
-   -> ``Inferred`` / Low confidence (the human-review queue).
+1. Visuals named/ID'd in ``Impacted Visual IDs`` / ``Impacted Visuals`` ->
+   mapped directly (``Visual ID`` / ``Visual Name``, High confidence).
+2. Pages named in ``Impacted Pages`` -> every real visual on the page
+   (``Page``, High confidence).
+3. PBIX tags: ``[R-104]`` in a visual's title/display name (``Tag``, High).
+4. Every mapped visual seeds the model objects it is bound to (the measures/
+   columns in its field wells) - this is how the tool discovers the impacted
+   model objects the user cannot reasonably know.
+5. Seeded objects expand through the existing impact engine (DAX dependency
+   graph + visual bindings); derived objects and visuals are recorded as
+   ``Dependency`` / Medium confidence.
 
-Whatever a requirement touches is then expanded through the existing impact
-engine (DAX dependency graph + visual bindings); derived objects and visuals
-are recorded as ``Dependency`` / Medium confidence.
-
-``build_requirement_mapping()`` is the only entry point most callers need.
+There is deliberately NO keyword/text inference: a requirement with no
+matching scope entries gets zero mappings plus a warning, instead of a noisy
+guess. ``build_requirement_mapping()`` is the only entry point most callers
+need.
 """
 import re
 
@@ -25,27 +28,10 @@ from model_change_impact.baseline_estimation import build_selection_diff
 from model_change_impact.history_store import object_key
 
 _CONFIDENCE_RANK = {"Low": 1, "Medium": 2, "High": 3}
-_SOURCE_CONFIDENCE = {"Tag": "High", "Seed": "High", "Dependency": "Medium", "Inferred": "Low"}
+_SOURCE_CONFIDENCE = {"Tag": "High", "Visual ID": "High", "Visual Name": "High",
+                      "Page": "High", "Dependency": "Medium"}
 
-_SEED_KINDS = ("measure", "table", "column", "visual", "page")
-
-_COLUMN_REF_RE = re.compile(r"^\s*(?P<table>[^\[\]]+?)\s*\[\s*(?P<name>[^\[\]]+?)\s*\]\s*$")
-_DESC_TAG_RE = re.compile(r"REQ\s*:\s*([^\n]+)", re.IGNORECASE)
 _BRACKET_TAG_RE = re.compile(r"\[([^\[\]]{1,64})\]")
-_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
-
-# Generic words that would otherwise match half the model.
-_STOPWORDS = {
-    "this", "that", "with", "from", "should", "must", "have", "will", "would",
-    "into", "when", "then", "than", "they", "them", "there", "where", "which",
-    "report", "page", "pages", "visual", "visuals", "measure", "measures",
-    "table", "tables", "column", "columns", "data", "show", "shows", "display",
-    "displays", "need", "needs", "user", "users", "able", "change", "changes",
-    "changed", "update", "updates", "updated", "add", "added", "remove",
-    "removed", "create", "created", "existing", "current", "currently",
-    "each", "every", "only", "also", "more", "most", "some", "such", "like",
-    "want", "make", "made", "using", "used", "based", "given", "per",
-}
 
 
 def build_requirement_mapping(snapshot, report_layout, requirements):
@@ -58,8 +44,14 @@ def build_requirement_mapping(snapshot, report_layout, requirements):
     summary sheet.
     """
     known_ids = {req["id"].casefold(): req["id"] for req in requirements}
-    model_objects = _iter_model_objects(snapshot)
     visual_index = _visual_index(report_layout)
+    visuals_by_name = {}
+    for key, visual in visual_index.items():
+        name = (visual.get("visual_display_name") or "").casefold()
+        if name:
+            visuals_by_name.setdefault(name, []).append(key)
+    visuals_by_id = {str(visual.get("visual_id")).casefold(): key
+                     for key, visual in visual_index.items() if visual.get("visual_id")}
     pages_by_name = {
         (page.get("display_name") or page.get("page_id") or "").casefold(): page
         for page in report_layout.get("pages", [])
@@ -73,28 +65,38 @@ def build_requirement_mapping(snapshot, report_layout, requirements):
             continue
         req_id = requirement["id"]
 
-        # Leg 1: explicit tags inside the PBIX.
-        for kind, table, name, details in model_objects:
-            if req_id in _tagged_ids_in_description(details.get("description"), known_ids):
-                _add(entry, "objects", (kind, table, name), "Tag")
+        # PBIX tags: [R-ID] in the visual's display name.
         for visual_key, visual in visual_index.items():
             if req_id in _tagged_ids_in_brackets(visual.get("visual_display_name"), known_ids):
-                _add(entry, "visuals", visual_key, "Tag", extra=_visual_extra(visual))
-                _seed_visual_fields(entry, visual, "Tag")
+                _map_visual(entry, visual_index, visual_key, "Tag")
 
-        # Leg 2: Seed Objects column in the requirements file.
-        for kind, value in _parse_seed_objects(requirement.get("seed_objects")):
-            _resolve_seed(entry, kind, value, req_id, snapshot, visual_index, pages_by_name)
+        # Explicit scope columns.
+        for name in _split_scope(requirement.get("impacted_visual_ids")):
+            key = visuals_by_id.get(name.casefold())
+            if key is None:
+                entry["warnings"].append(
+                    f"{req_id}: impacted visual ID '{name}' not found in the report layout.")
+            else:
+                _map_visual(entry, visual_index, key, "Visual ID")
+        for name in _split_scope(requirement.get("impacted_visuals")):
+            keys = visuals_by_name.get(name.casefold(), [])
+            if not keys:
+                entry["warnings"].append(
+                    f"{req_id}: impacted visual '{name}' not found in the report layout.")
+            for key in keys:
+                _map_visual(entry, visual_index, key, "Visual Name")
+        for name in _split_scope(requirement.get("impacted_pages")):
+            page = pages_by_name.get(name.casefold())
+            if page is None:
+                entry["warnings"].append(
+                    f"{req_id}: impacted page '{name}' not found in the report layout.")
+                continue
+            for visual_key in _page_visual_keys(page, visual_index):
+                _map_visual(entry, visual_index, visual_key, "Page")
 
-        # Leg 3: keyword inference from Title + Description.
-        tokens = _keyword_tokens(requirement.get("title", "") + " " + requirement.get("description", ""))
-        if tokens:
-            for kind, table, name, _details in model_objects:
-                if _matches_any(name, tokens):
-                    _add(entry, "objects", (kind, table, name), "Inferred")
-            for visual_key, visual in visual_index.items():
-                if _matches_any(visual.get("visual_display_name") or "", tokens):
-                    _add(entry, "visuals", visual_key, "Inferred", extra=_visual_extra(visual))
+        if not entry["visuals"]:
+            entry["warnings"].append(
+                f"{req_id}: no visuals or pages matched - requirement maps to nothing.")
 
         # Dependency expansion through the existing impact engine.
         _expand_requirement(entry, snapshot, report_layout)
@@ -117,26 +119,12 @@ def build_object_attribution(mapping):
 
 
 # ---------------------------------------------------------------------------
-# Mapping primitives
+# Resolution primitives
 # ---------------------------------------------------------------------------
 
-def _add(entry, collection, key, source, extra=None):
-    confidence = _SOURCE_CONFIDENCE[source]
-    existing = entry[collection].get(key)
-    if existing is None or _CONFIDENCE_RANK[confidence] > _CONFIDENCE_RANK[existing["confidence"]]:
-        entry[collection][key] = {"source": source, "confidence": confidence, **(extra or {})}
-
-
-def _iter_model_objects(snapshot):
-    objects = []
-    for table_name, table in snapshot.get("tables", {}).items():
-        objects.append(("table", table_name, table_name, table))
-        for column in table.get("columns", []):
-            objects.append(("column", table_name, column["name"], column))
-    for table_name, measures in snapshot.get("measures", {}).items():
-        for measure_name, measure in measures.items():
-            objects.append(("measure", table_name, measure_name, measure))
-    return objects
+def _split_scope(text):
+    """Split a comma-separated scope cell into trimmed, non-empty entries."""
+    return [part.strip() for part in (text or "").split(",") if part.strip()]
 
 
 def _visual_index(report_layout):
@@ -157,6 +145,10 @@ def _visual_index(report_layout):
     return index
 
 
+def _page_visual_keys(page, visual_index):
+    return [key for key in visual_index if key[0] == page.get("page_id")]
+
+
 def _visual_extra(visual, matched_via=None):
     return {
         "page_display_name": visual.get("page_display_name") or "",
@@ -167,6 +159,22 @@ def _visual_extra(visual, matched_via=None):
     }
 
 
+def _add(entry, collection, key, source, extra=None):
+    confidence = _SOURCE_CONFIDENCE[source]
+    existing = entry[collection].get(key)
+    if existing is None or _CONFIDENCE_RANK[confidence] > _CONFIDENCE_RANK[existing["confidence"]]:
+        entry[collection][key] = {"source": source, "confidence": confidence, **(extra or {})}
+
+
+def _map_visual(entry, visual_index, visual_key, source):
+    """Map a visual and the model objects it is bound to (field wells)."""
+    visual = visual_index[visual_key]
+    _add(entry, "visuals", visual_key, source, extra=_visual_extra(visual))
+    for field in visual.get("fields", []):
+        if field.get("kind") in ("column", "measure") and field.get("table") and field.get("field"):
+            _add(entry, "objects", (field["kind"], field["table"], field["field"]), source)
+
+
 def _tagged_ids_in_brackets(text, known_ids):
     found = set()
     for content in _BRACKET_TAG_RE.findall(text or ""):
@@ -174,123 +182,6 @@ def _tagged_ids_in_brackets(text, known_ids):
         if actual:
             found.add(actual)
     return found
-
-
-def _tagged_ids_in_description(text, known_ids):
-    found = set()
-    for chunk in _DESC_TAG_RE.findall(text or ""):
-        for token in re.split(r"[,;]", chunk):
-            actual = known_ids.get(token.strip().casefold())
-            if actual:
-                found.add(actual)
-    return found
-
-
-def _keyword_tokens(text):
-    tokens = set()
-    for token in _TOKEN_RE.findall(text or ""):
-        folded = token.casefold()
-        if len(folded) >= 4 and folded not in _STOPWORDS:
-            tokens.add(folded)
-    return sorted(tokens)
-
-
-def _matches_any(name, tokens):
-    folded = name.casefold()
-    return any(token in folded for token in tokens)
-
-
-# ---------------------------------------------------------------------------
-# Seed Objects resolution
-# ---------------------------------------------------------------------------
-
-def _parse_seed_objects(text):
-    """Parse the Seed Objects cell: comma-separated ``kind:value`` entries.
-    Returns a list of (kind, value); kind is None for unparseable chunks."""
-    seeds = []
-    for chunk in (text or "").split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        if ":" not in chunk:
-            seeds.append((None, chunk))
-            continue
-        kind, value = chunk.split(":", 1)
-        seeds.append((kind.strip().casefold(), value.strip()))
-    return seeds
-
-
-def _resolve_seed(entry, kind, value, req_id, snapshot, visual_index, pages_by_name):
-    if kind not in _SEED_KINDS or not value:
-        entry["warnings"].append(
-            f"{req_id}: unrecognized Seed Objects entry "
-            f"'{kind + ':' if kind else ''}{value}' (expected measure:/table:/column:/visual:/page:)."
-        )
-        return
-
-    if kind == "measure":
-        hits = [(table, name) for table, measures in snapshot.get("measures", {}).items()
-                for name in measures if name.casefold() == value.casefold()]
-        for table, name in hits:
-            _add(entry, "objects", ("measure", table, name), "Seed")
-        if not hits:
-            entry["warnings"].append(f"{req_id}: seed measure '{value}' not found in the model.")
-    elif kind == "table":
-        match = next((t for t in snapshot.get("tables", {}) if t.casefold() == value.casefold()), None)
-        if match is None:
-            entry["warnings"].append(f"{req_id}: seed table '{value}' not found in the model.")
-        else:
-            _add(entry, "objects", ("table", match, match), "Seed")
-    elif kind == "column":
-        ref = _COLUMN_REF_RE.match(value)
-        hits = []
-        for table, table_details in snapshot.get("tables", {}).items():
-            if ref and table.casefold() != ref.group("table").strip().casefold():
-                continue
-            wanted = (ref.group("name") if ref else value).strip().casefold()
-            for column in table_details.get("columns", []):
-                if column["name"].casefold() == wanted:
-                    hits.append((table, column["name"]))
-        for table, name in hits:
-            _add(entry, "objects", ("column", table, name), "Seed")
-        if not hits:
-            entry["warnings"].append(f"{req_id}: seed column '{value}' not found in the model.")
-    elif kind == "visual":
-        hits = _find_visuals(visual_index, value)
-        for visual_key in hits:
-            _add(entry, "visuals", visual_key, "Seed", extra=_visual_extra(visual_index[visual_key]))
-            _seed_visual_fields(entry, visual_index[visual_key], "Seed")
-        if not hits:
-            entry["warnings"].append(f"{req_id}: seed visual '{value}' not found in the report layout.")
-    elif kind == "page":
-        page = pages_by_name.get(value.casefold())
-        if page is None:
-            entry["warnings"].append(f"{req_id}: seed page '{value}' not found in the report layout.")
-            return
-        for visual in page.get("visuals", []):
-            if visual.get("kind") != "visual":
-                continue
-            visual_key = (page.get("page_id"), visual.get("visual_id"))
-            if visual_key in visual_index:
-                _add(entry, "visuals", visual_key, "Seed", extra=_visual_extra(visual_index[visual_key]))
-                _seed_visual_fields(entry, visual_index[visual_key], "Seed")
-
-
-def _find_visuals(visual_index, name):
-    folded = name.casefold()
-    exact = [key for key, visual in visual_index.items()
-             if (visual.get("visual_display_name") or "").casefold() == folded]
-    if exact:
-        return exact
-    return [key for key, visual in visual_index.items()
-            if folded and folded in (visual.get("visual_display_name") or "").casefold()]
-
-
-def _seed_visual_fields(entry, visual, source):
-    """A tagged/seeded visual also maps the model objects it is bound to."""
-    for field in visual.get("fields", []):
-        if field.get("kind") in ("column", "measure") and field.get("table") and field.get("field"):
-            _add(entry, "objects", (field["kind"], field["table"], field["field"]), source)
 
 
 # ---------------------------------------------------------------------------

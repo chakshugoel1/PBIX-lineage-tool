@@ -206,8 +206,8 @@ def _write_requirements(path):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Requirements"
-    sheet.append(["Requirement ID", "Title", "Status", "Priority", "Seed Objects"])
-    sheet.append(["R-1", "Sales KPI rework", "Approved", "High", "measure:Total Sales"])
+    sheet.append(["Requirement ID", "Title", "Status", "Priority", "Impacted Visuals"])
+    sheet.append(["R-1", "Sales KPI rework", "Approved", "High", "Sales KPI"])
     workbook.save(path)
 
 
@@ -232,11 +232,17 @@ def test_requirements_driven_report_and_history_round_trip(tmp_path):
     requirement_summary = list(
         workbook["Requirement Summary"].iter_rows(min_row=2, values_only=True))
     assert requirement_summary[0][0] == "R-1"
-    assert requirement_summary[0][7] == 2  # Impacted Measures: seed + YTD dependency
+    # Impacted Measures: Total Sales YTD (bound to the "Sales KPI" visual).
+    # Its dependency Total Sales is upstream - upstream references are not
+    # impacted by a change to the referenced object (established engine rule).
+    assert requirement_summary[0][7] == 1
 
-    # Second run with a changed measure expression -> attributed Modified event.
+    # Second run with a changed expression on the seeded visual's own measure
+    # (Total Sales YTD is bound to the "Sales KPI" visual) -> attributed
+    # Modified event.
     changed = _snapshot()
-    changed["measures"]["_Measures"]["Total Sales"] = _measure("SUMX(Sales, Sales[Amount])")
+    changed["measures"]["_Measures"]["Total Sales YTD"] = _measure(
+        "CALCULATE(SUM(Sales[Amount]), DATESYTD(Calendar[Date]))")
     summary = baseline_estimation.build_report(
         changed, _layout(), str(output_path),
         requirements_path=str(requirements_path), history_db_path=history_db)
@@ -244,6 +250,6 @@ def test_requirements_driven_report_and_history_round_trip(tmp_path):
     history_rows = list(load_workbook(output_path)["Object Change History"].iter_rows(
         min_row=2, values_only=True))
     modified = next(row for row in history_rows if row[3] == "Modified")
-    assert modified[1] == "_Measures[Total Sales]"
+    assert modified[1] == "_Measures[Total Sales YTD]"
     assert modified[7] == "R-1"
     assert summary["unmapped_changes"] == 0
