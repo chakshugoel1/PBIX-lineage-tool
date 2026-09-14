@@ -899,7 +899,13 @@ class AboutInterface(QWidget):
         layout.addStretch(1)
         self.update_worker = None
         self.update_check_worker = None
-        QTimer.singleShot(1000, self._start_update_check)
+        # Startup check is informational only: it never starts an update (and
+        # therefore never restarts the app) on its own - otherwise running a
+        # local dev branch whose HEAD differs from origin/main would loop
+        # forever (check -> "update available" -> pull fails/can't apply ->
+        # restart -> check again). Updates only run when the user clicks the
+        # "Check for Updates" button explicitly.
+        QTimer.singleShot(1000, lambda: self._start_update_check(auto=True))
 
     def _on_theme_changed(self, checked):
         setTheme(Theme.DARK if checked else Theme.LIGHT)
@@ -910,21 +916,27 @@ class AboutInterface(QWidget):
     def _on_check_update(self):
         self._start_update_check()
 
-    def _start_update_check(self):
+    def _start_update_check(self, auto=False):
         if self.update_check_worker is not None and self.update_check_worker.isRunning():
             return
         self.update_button.setEnabled(False)
         self.update_status.setText("Checking for updates...")
         self.update_check_worker = UpdateCheckWorker(self)
-        self.update_check_worker.checked.connect(self._on_update_check_finished)
+        self.update_check_worker.checked.connect(
+            lambda has_update, revision, error: self._on_update_check_finished(
+                has_update, revision, error, auto=auto))
         self.update_check_worker.start()
 
-    def _on_update_check_finished(self, has_update, revision, error):
+    def _on_update_check_finished(self, has_update, revision, error, auto=False):
         if error:
             self.update_status.setText(f"Could not check for updates: {error}")
             self.update_button.setEnabled(True)
         elif not has_update:
             self.update_status.setText(f"You're up to date ({revision or 'main'}).")
+            self.update_button.setEnabled(True)
+        elif auto:
+            self.update_status.setText(
+                f"Update available: {revision}. Click 'Check for Updates' to install it.")
             self.update_button.setEnabled(True)
         else:
             self.update_status.setText(f"Update available: {revision}. Updating...")
