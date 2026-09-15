@@ -201,3 +201,35 @@ def test_build_object_attribution_covers_objects_visuals_pages():
     assert attribution["visual|p1|v2"] == "R-2"
     assert "page|p1" in attribution
     assert "page|p2" in attribution
+
+
+def test_dependency_visuals_keep_only_direct_non_slicer():
+    """A declared visual's bound column seeds other visuals. Dependency
+    expansion must surface only visuals DIRECTLY bound to an impacted object
+    and never slicer-type filter controls."""
+    layout = _layout()
+    # A slicer bound to Sales[Amount] (direct) - must be dropped.
+    layout["pages"][0]["visuals"].append({
+        "kind": "visual", "visual_id": "slicer1", "visual_type": "slicer",
+        "kpi_classification": None, "display_name": "Amount filter",
+        "fields": [{"kind": "column", "table": "Sales", "field": "Amount", "role": "Values"}],
+        "filters": [],
+    })
+    # A chart on another page bound to Sales[Amount] (direct) - must be kept.
+    layout["pages"][1]["visuals"].append({
+        "kind": "visual", "visual_id": "v4", "visual_type": "columnChart",
+        "kpi_classification": None, "display_name": "Amount Chart",
+        "fields": [{"kind": "column", "table": "Sales", "field": "Amount", "role": "Y"}],
+        "filters": [],
+    })
+    # Declare the "Sales Trend" chart on p1, which is bound to Sales[Amount].
+    mapping = requirement_mapping.build_requirement_mapping(
+        _snapshot(), layout, [_req("R-10", visuals="Sales Trend")])
+    entry = mapping["R-10"]
+    # Sales[Amount] is seeded (bound to the declared chart).
+    assert ("column", "Sales", "Amount") in entry["objects"]
+    # The directly-bound non-slicer chart on p2 is surfaced via Dependency.
+    assert entry["visuals"][("p2", "v4")]["source"] == "Dependency"
+    assert entry["visuals"][("p2", "v4")]["matched_via"] == "direct"
+    # The slicer is never surfaced.
+    assert ("p1", "slicer1") not in entry["visuals"]

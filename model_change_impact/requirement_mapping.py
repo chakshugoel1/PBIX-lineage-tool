@@ -20,6 +20,14 @@ There is deliberately NO keyword/text inference: a requirement with no
 matching scope entries gets zero mappings plus a warning, instead of a noisy
 guess. ``build_requirement_mapping()`` is the only entry point most callers
 need.
+
+Dependency-expanded visuals are surfaced only when they are DIRECTLY bound to
+an impacted object (``matched_via == "direct"``); transitive-chain visuals and
+slicer-type visuals (filters, not content) are dropped from the requirement's
+visual set so the count reflects reviewable impact, not report-wide filter
+fan-out. Objects (measures/columns) are always expanded in full - the filter
+only applies to visuals. Declared visuals (IDs/names/pages/tags) are never
+filtered.
 """
 import re
 
@@ -32,6 +40,10 @@ _SOURCE_CONFIDENCE = {"Tag": "High", "Visual ID": "High", "Visual Name": "High",
                       "Page": "High", "Dependency": "Medium"}
 
 _BRACKET_TAG_RE = re.compile(r"\[([^\[\]]{1,64})\]")
+
+# Visual types that are filter controls, not content - excluded from
+# dependency-surfaced visuals (they repeat on every page and drown the count).
+_SLICER_TYPE_TOKENS = ("slicer", "textfilter")
 
 
 def build_requirement_mapping(snapshot, report_layout, requirements):
@@ -188,6 +200,11 @@ def _tagged_ids_in_brackets(text, known_ids):
 # Dependency expansion
 # ---------------------------------------------------------------------------
 
+def _is_slicer_type(visual_type):
+    folded = (visual_type or "").casefold()
+    return any(token in folded for token in _SLICER_TYPE_TOKENS)
+
+
 def _expand_requirement(entry, snapshot, report_layout):
     selections = [
         {"kind": kind, "table": table, "name": name}
@@ -208,6 +225,13 @@ def _expand_requirement(entry, snapshot, report_layout):
                 _add(entry, "objects",
                      (dependent["kind"], dependent["table"], dependent["name"]), "Dependency")
             for visual in record.get("impacted_visuals", []):
+                # Only surface visuals directly bound to an impacted object,
+                # and skip slicer-type filter controls - transitive-chain and
+                # slicer matches are report-wide fan-out, not reviewable impact.
+                if visual.get("matched_via") != "direct":
+                    continue
+                if _is_slicer_type(visual.get("visual_type")):
+                    continue
                 visual_key = (visual.get("page_id"), visual.get("visual_id"))
                 _add(entry, "visuals", visual_key, "Dependency",
                      extra=_visual_extra(visual, matched_via=visual.get("matched_via")))
