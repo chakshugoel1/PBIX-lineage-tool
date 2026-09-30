@@ -25,6 +25,9 @@ DTS - Classification Pays - BLUE.pbix
 CASHPLUS-DASHBOARD 1.xlsx
 Generated_*_Lineage.xlsx
 Dataflow_Table_Lineage_Report_*.xlsx
+Baseline_Estimation_*.xlsx
+Model_Change_Impact_*.xlsx
+visual_descriptions.json
 Final_Source_Comparison_*.xlsx
 Final_Source_Comparison_*_backup.xlsx
 Review_Transformations_Real_Data.xlsx
