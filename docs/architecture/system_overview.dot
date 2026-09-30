@@ -1,0 +1,77 @@
+digraph system_overview {
+  graph [rankdir=LR, bgcolor="white", pad="0.25", nodesep="0.45", ranksep="0.75", splines=ortho, fontname="Segoe UI", label="PBIX Lineage Tool - verified system architecture", labelloc=t, fontsize=22];
+  node [shape=box, style="rounded,filled", fontname="Segoe UI", fontsize=10, margin="0.12,0.08", color="#475569", penwidth=1.2];
+  edge [fontname="Segoe UI", fontsize=8, color="#475569", arrowsize=0.7];
+
+  user [label="User\nWindows desktop", fillcolor="#DBEAFE"];
+  subgraph cluster_app {
+    label="Application process boundary: Python + PySide6/QFluentWidgets"; color="#2563EB"; penwidth=1.5; style="rounded";
+    entry [label="app.py\nidentity + logging\nQApplication", fillcolor="#BFDBFE"];
+    ui [label="gui/main_window.py\nMainWindow + 5 tabs\nvalidation, progress, results", fillcolor="#BFDBFE"];
+    workers [label="gui/worker.py\nQThread workers + signals\nerror/cancel handling", fillcolor="#BFDBFE"];
+    settings [label="gui/settings.py\nper-user settings.json", fillcolor="#E0F2FE"];
+    updater [label="gui/updater.py\nGit remote check/update\nshortcut identity", fillcolor="#E0F2FE"];
+    entry -> ui [label="launches"];
+    ui -> workers [label="starts worker\nQt signal/slot"];
+    ui -> settings [label="load/save"];
+    ui -> updater [label="About tab"];
+    workers -> ui [label="progress/success/failure\nQt signals", dir=both];
+  }
+
+  subgraph cluster_workflows {
+    label="Python workflow engines"; color="#0F766E"; penwidth=1.5; style="rounded";
+    lineage [label="V1 source lineage\nreporting/lineage_report.py\ncore/lineage_lib.py\nreporting/dataflow_table_report.py", fillcolor="#CCFBF1"];
+    export [label="Dataflow export\nservices/dataflow_export.py\nservices/guid_resolver.py", fillcolor="#CCFBF1"];
+    impact [label="V2 model change impact\nmodel_change_impact/{snapshot,report_layout,diff,impact,excel_report}.py", fillcolor="#CCFBF1"];
+    baseline [label="Baseline estimation\nmodel_change_impact/baseline_estimation.py\nrequirements + visual mapping", fillcolor="#CCFBF1"];
+    workers -> lineage [label="PipelineWorker\nfunction calls"];
+    workers -> export [label="DataflowExportWorker\nfunction calls"];
+    workers -> impact [label="ModelChangeImpactWorker\nfunction calls"];
+    workers -> baseline [label="BaselineEstimationWorker\nfunction calls"];
+  }
+
+  subgraph cluster_local {
+    label="Local files and stores"; color="#A16207"; penwidth=1.5; style="rounded";
+    pbix [label="PBIX inputs\nsemantic model + report layout\nread via pbixray/ZIP", fillcolor="#FEF3C7"];
+    dataflows [label="PowerBIDataflows/*.json\nexported dataflow definitions", fillcolor="#FEF3C7"];
+    guid [label="guid_dataflow_names.json\nGUID/name cache", fillcolor="#FEF3C7"];
+    xlsx [label="Excel outputs\nlineage, companion, baseline, impact", fillcolor="#FEF3C7"];
+    history [label="SQLite\nprevious_runs/history/impact_history.db", fillcolor="#FEF3C7"];
+    settings_file [label="%APPDATA%\\PBIXLineageTool\\settings.json", fillcolor="#FEF3C7"];
+  }
+
+  subgraph cluster_external {
+    label="External systems / deployment"; color="#7C3AED"; penwidth=1.5; style="rounded";
+    powerbi [label="Power BI Service\nREST dataflows API\ninteractive token via MicrosoftPowerBIMgmt", fillcolor="#EDE9FE"];
+    github [label="GitHub origin/main\nupdate check + git pull\ninstaller bootstrap download", fillcolor="#EDE9FE"];
+    ps [label="Windows PowerShell\nExport-AllDataflows.ps1\nResolve-DataflowNames.ps1", fillcolor="#EDE9FE"];
+    installer [label="Install.cmd / bootstrap-install.ps1\nwinget Python + Git\n.venv + Start Menu shortcut", fillcolor="#EDE9FE"];
+  }
+
+  user -> entry [label="double-click / python app.py"];
+  lineage -> pbix [label="read PBIX metadata"];
+  lineage -> dataflows [label="parse JSON"];
+  lineage -> guid [label="read/write GUID cache"];
+  lineage -> xlsx [label="openpyxl workbook writes"];
+  export -> ps [label="subprocess stdout\n##RESULT## JSON"];
+  ps -> powerbi [label="Power BI cmdlets + REST", dir=both];
+  export -> dataflows [label="write JSON files"];
+  export -> guid [label="persist mappings"];
+  lineage -> ps [label="optional online GUID lookup", style=dashed];
+  impact -> pbix [label="read baseline/changed PBIX"];
+  impact -> xlsx [label="openpyxl workbook write"];
+  baseline -> pbix [label="read one PBIX"];
+  baseline -> xlsx [label="openpyxl workbook write"];
+  baseline -> history [label="record run / events"];
+  updater -> github [label="git commands", dir=both];
+  installer -> github [label="download bootstrap", dir=both];
+  updater -> installer [label="same installed copy", style=dashed];
+  settings -> settings_file [label="JSON persistence"];
+
+  subgraph cluster_legend {
+    label="Legend"; color="#94A3B8"; style="rounded,dashed";
+    l1 [label="solid arrow = verified synchronous call/data flow", fillcolor="white"];
+    l2 [label="dashed arrow = optional or inferred path", fillcolor="white"];
+    l3 [label="External boundary", fillcolor="#EDE9FE"];
+  }
+}

@@ -1,6 +1,6 @@
 """Requirement traceability sheets for the Baseline Estimation workbook.
 
-Adds four sheets driven by the hybrid requirement mapping
+Adds five sheets driven by the report-grain requirement mapping
 (requirement_mapping.py) and the local change-history store
 (history_store.py):
 
@@ -11,6 +11,8 @@ Adds four sheets driven by the hybrid requirement mapping
                                  attribution, plus an empty
                                  ``Assign Requirement ID`` column users can
                                  copy into Seed Objects on the next run
+- ``Requirement Impact``       - pre-development impact rows for each
+                                 requirement and mapped Visual ID/object
 
 ``build_requirement_sheets()`` is the only entry point most callers need.
 """
@@ -50,20 +52,29 @@ _UNMAPPED_HEADERS = [
     "Object Type", "Object Name", "Change Type", "Changed At", "Assign Requirement ID",
 ]
 
+_IMPACT_HEADERS = [
+    "Requirement ID", "Requirement Title", "Priority", "Status",
+    "Impact Item Type", "Visual ID", "Report Page", "Visual Name",
+    "Object Type", "Object Name", "Mapping Source", "Confidence",
+    "Impact Basis", "Review Flag",
+]
+
 
 def build_requirement_sheets(workbook, requirements, mapping, history, events,
                              changed_keys, run_at):
-    """Append the four requirement sheets to `workbook`. Returns summary
+    """Append the requirement sheets to `workbook`. Returns summary
     stats: ``{"mapped_objects", "unmapped_changes", "low_confidence"}``."""
     traceability_rows = _build_traceability_rows(
         requirements, mapping, history, changed_keys, run_at)
     summary_rows = _build_summary_rows(requirements, mapping, run_at)
     unmapped_rows = _build_unmapped_rows(events)
+    impact_rows = _build_requirement_impact_rows(requirements, mapping)
 
     _write_summary_sheet(workbook.create_sheet("Requirement Summary"), summary_rows)
     _write_traceability_sheet(workbook.create_sheet("Requirement Traceability"), traceability_rows)
     _write_history_sheet(workbook.create_sheet("Object Change History"), events)
     _write_unmapped_sheet(workbook.create_sheet("Unmapped Changes"), unmapped_rows)
+    _write_impact_sheet(workbook.create_sheet("Requirement Impact"), impact_rows)
 
     return {
         "mapped_objects": len({
@@ -226,6 +237,57 @@ def _build_unmapped_rows(events):
     return rows
 
 
+def _build_requirement_impact_rows(requirements, mapping):
+    """Build the user-facing pre-development impact table.
+
+    Requirements select report-grain visuals. Their bound model objects are
+    listed alongside the Visual IDs so a reviewer can see both the declared
+    scope and the derived model impact without editing the baseline inventory.
+    """
+    rows = []
+    for requirement in requirements:
+        entry = mapping.get(requirement["id"], {"objects": {}, "visuals": {}, "warnings": []})
+        review = "Yes" if entry.get("warnings") else ""
+        base = {
+            "Requirement ID": requirement["id"],
+            "Requirement Title": requirement["title"],
+            "Priority": requirement.get("priority", "Medium"),
+            "Status": requirement["status"],
+        }
+        for (page_id, visual_id), info in sorted(
+                entry.get("visuals", {}).items(), key=lambda item: (str(item[0][0]), str(item[0][1]))):
+            visual_name = info.get("visual_display_name") or (
+                f"(Untitled {info.get('visual_type') or 'visual'}) [ID: {visual_id}]")
+            rows.append({
+                **base, "Impact Item Type": "Visual", "Visual ID": visual_id,
+                "Report Page": info.get("page_display_name") or page_id or "",
+                "Visual Name": visual_name, "Object Type": "", "Object Name": "",
+                "Mapping Source": info.get("source", ""),
+                "Confidence": info.get("confidence", ""),
+                "Impact Basis": "Declared scope" if info.get("source") != "Dependency" else "Dependency",
+                "Review Flag": review,
+            })
+        for (kind, table, name), info in sorted(
+                entry.get("objects", {}).items(), key=lambda item: (item[0][0], item[0][1], item[0][2])):
+            object_name = name if kind == "table" else f"{table}[{name}]"
+            rows.append({
+                **base, "Impact Item Type": "Model Object", "Visual ID": "",
+                "Report Page": "", "Visual Name": "", "Object Type": kind.title(),
+                "Object Name": object_name, "Mapping Source": info.get("source", ""),
+                "Confidence": info.get("confidence", ""),
+                "Impact Basis": "Direct binding" if info.get("source") != "Dependency" else "Dependency chain",
+                "Review Flag": "Yes" if review or info.get("confidence") == "Low" else "",
+            })
+        if not entry.get("visuals") and not entry.get("objects"):
+            rows.append({
+                **base, "Impact Item Type": "No mapping", "Visual ID": "", "Report Page": "",
+                "Visual Name": "", "Object Type": "", "Object Name": "",
+                "Mapping Source": "", "Confidence": "", "Impact Basis": "No current impact detected",
+                "Review Flag": "Yes",
+            })
+    return rows
+
+
 def _days_between(start, end):
     start_dt, end_dt = _parse_ts(start), _parse_ts(end)
     if start_dt is None or end_dt is None:
@@ -289,3 +351,8 @@ def _write_history_sheet(ws, events):
 
 def _write_unmapped_sheet(ws, rows):
     _write_rows(ws, _UNMAPPED_HEADERS, rows)
+
+
+def _write_impact_sheet(ws, rows):
+    _write_rows(ws, _IMPACT_HEADERS, rows,
+                highlight_column="Review Flag", highlight_value="Yes")

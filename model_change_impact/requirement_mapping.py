@@ -36,7 +36,7 @@ from model_change_impact.baseline_estimation import build_selection_diff
 from model_change_impact.history_store import object_key
 
 _CONFIDENCE_RANK = {"Low": 1, "Medium": 2, "High": 3}
-_SOURCE_CONFIDENCE = {"Tag": "High", "Visual ID": "High", "Visual Name": "High",
+_SOURCE_CONFIDENCE = {"Tag": "High", "Requirement Number": "High", "Visual ID": "High", "Visual Name": "High",
                       "Page": "High", "Dependency": "Medium"}
 
 _BRACKET_TAG_RE = re.compile(r"\[([^\[\]]{1,64})\]")
@@ -46,7 +46,7 @@ _BRACKET_TAG_RE = re.compile(r"\[([^\[\]]{1,64})\]")
 _SLICER_TYPE_TOKENS = ("slicer", "textfilter")
 
 
-def build_requirement_mapping(snapshot, report_layout, requirements):
+def build_requirement_mapping(snapshot, report_layout, requirements, include_inactive=False):
     """Map every requirement to model objects and visuals.
 
     Returns ``{requirement_id: {"objects": {(kind, table, name): {"source",
@@ -64,6 +64,10 @@ def build_requirement_mapping(snapshot, report_layout, requirements):
             visuals_by_name.setdefault(name, []).append(key)
     visuals_by_id = {str(visual.get("visual_id")).casefold(): key
                      for key, visual in visual_index.items() if visual.get("visual_id")}
+    visuals_by_requirement_number = {
+        f"REQ-{str(visual.get('visual_id'))}".casefold(): key
+        for key, visual in visual_index.items() if visual.get("visual_id")
+    }
     pages_by_name = {
         (page.get("display_name") or page.get("page_id") or "").casefold(): page
         for page in report_layout.get("pages", [])
@@ -73,9 +77,13 @@ def build_requirement_mapping(snapshot, report_layout, requirements):
     for requirement in requirements:
         entry = {"objects": {}, "visuals": {}, "warnings": []}
         mapping[requirement["id"]] = entry
-        if not requirement.get("active", True):
+        if not requirement.get("active", True) and not include_inactive:
             continue
         req_id = requirement["id"]
+
+        requirement_key = visuals_by_requirement_number.get(req_id.casefold())
+        if requirement_key is not None:
+            _map_visual(entry, visual_index, requirement_key, "Requirement Number")
 
         # PBIX tags: [R-ID] in the visual's display name.
         for visual_key, visual in visual_index.items():
@@ -128,6 +136,22 @@ def build_object_attribution(mapping):
             attribution.setdefault(object_key("visual", page_id, visual_id), []).append(req_id)
             attribution.setdefault(object_key("page", page_id), []).append(req_id)
     return {key: "; ".join(sorted(set(ids))) for key, ids in attribution.items()}
+
+
+def validate_visual_requirement_assignments(mapping):
+    """Return warnings when a Visual ID is assigned to multiple requirements."""
+    assignments = {}
+    for requirement_id, entry in mapping.items():
+        for visual_key in entry.get("visuals", {}):
+            assignments.setdefault(visual_key, []).append(requirement_id)
+    warnings = []
+    for (page_id, visual_id), requirement_ids in sorted(assignments.items(), key=str):
+        unique_ids = sorted(set(requirement_ids), key=str.casefold)
+        if len(unique_ids) > 1:
+            warnings.append(
+                f"Visual ID '{visual_id}' on page '{page_id}' is assigned to multiple "
+                f"requirements: {', '.join(unique_ids)}. One Visual ID must map to one requirement.")
+    return warnings
 
 
 # ---------------------------------------------------------------------------

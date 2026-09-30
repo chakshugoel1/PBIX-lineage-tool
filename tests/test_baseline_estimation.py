@@ -127,7 +127,7 @@ def test_selected_relationship_uses_broad_v2_impact():
     assert visual_ids == {"chart", "kpi"}
 
 
-def test_report_has_exact_v2_impact_summary_grain_and_headers(tmp_path):
+def test_report_has_consolidated_baseline_grain_and_headers(tmp_path):
     selections = [
         _selection("measure", "_Measures", "Total Sales"),
         _selection("measure", "_Measures", "Unused"),
@@ -136,23 +136,28 @@ def test_report_has_exact_v2_impact_summary_grain_and_headers(tmp_path):
 
     summary = baseline_estimation.build_report(_snapshot(), _layout(), selections, str(output_path))
     workbook = load_workbook(output_path)
-    sheet = workbook["Impact Summary"]
+    sheet = workbook["RTM"]
 
-    assert workbook.sheetnames == ["Object Summary", "Impact Summary", "Model Inventory", "Visual Inventory"]
-    assert [cell.value for cell in sheet[1]] == [
-        "Changed Object Type", "Changed Object", "Change Type", "Affected Visual ID",
-        "Affected Visual Name", "Visual Type", "Page Name", "Is KPI", "KPI Confidence",
-        "Impact Basis", "Actual Report Change",
+    assert workbook.sheetnames == [
+        "RTM", "Requirement Copy", "Visual Impact by Requirement",
     ]
-    assert sheet.auto_filter.ref == "A1:K3"
+    assert [cell.value for cell in sheet[1]] == [
+        "Requirement Number", "Requirement Status", "Visual ID", "Page Name", "Visual Name",
+        "Visual Type", "KPI Classification", "Measures", "Columns", "Tables", "Relationships",
+        "Visual Description", "Page Filters", "Visual Filters", "Impact Basis", "Object Count",
+        "Generated Date", "Generated Time",
+    ]
+    assert sheet.auto_filter.ref.startswith("A1:Q")
     assert summary["selected_objects"] == 2
-    assert summary["impact_rows"] == 2
-    assert summary["impacted_visuals"] == 1
+    assert summary["impact_rows"] == 0
+    assert summary["impacted_visuals"] == 0
     rows = list(sheet.iter_rows(min_row=2, values_only=True))
-    by_object = {row[1]: row for row in rows}
-    assert by_object["_Measures[Total Sales]"][4] == "Sales KPI"
-    assert by_object["_Measures[Total Sales]"][9] == "Dependency chain"
-    assert by_object["_Measures[Unused]"][9] == "No visual binding found"
+    assert len(rows) == 2
+    by_visual = {row[2]: row for row in rows}
+    assert by_visual["kpi"][0] == "RE1_kpi_Overview_001"
+    assert by_visual["kpi"][3] == "Overview"
+    assert by_visual["kpi"][11] == "Displays _Measures[Total Sales YTD] as a KPI."
+    assert by_visual["kpi"][15] and by_visual["kpi"][16]
 
 
 def test_all_object_report_includes_every_object_and_summary_counts(tmp_path):
@@ -160,17 +165,13 @@ def test_all_object_report_includes_every_object_and_summary_counts(tmp_path):
 
     summary = baseline_estimation.build_report(_snapshot(), _layout(), str(output_path))
     workbook = load_workbook(output_path)
-    object_summary = workbook["Object Summary"]
-    model_inventory = workbook["Model Inventory"]
+    baseline = workbook["RTM"]
 
     assert summary["model_objects"] == 9
-    assert object_summary.max_row == 10
-    assert object_summary.auto_filter.ref == "A1:J10"
-    assert model_inventory.max_row == 10
-    assert model_inventory.auto_filter.ref == "A1:M10"
-    rows = list(object_summary.iter_rows(min_row=2, values_only=True))
-    total_sales = next(row for row in rows if row[1] == "_Measures[Total Sales]")
-    assert total_sales[2:7] == (0, 1, 1, 1, 1)
+    assert baseline.max_row == 3
+    rows = list(baseline.iter_rows(min_row=2, values_only=True))
+    assert len({row[2] for row in rows}) == 2
+    assert any(row[7] or row[8] or row[9] or row[10] for row in rows)
 
 
 def test_visual_inventory_has_one_row_per_binding_and_name_source(tmp_path):
@@ -180,13 +181,13 @@ def test_visual_inventory_has_one_row_per_binding_and_name_source(tmp_path):
     output_path = tmp_path / "visual-inventory.xlsx"
 
     baseline_estimation.build_report(_snapshot(), layout, str(output_path))
-    sheet = load_workbook(output_path)["Visual Inventory"]
+    sheet = load_workbook(output_path)["RTM"]
     rows = list(sheet.iter_rows(min_row=2, values_only=True))
 
-    assert sheet.auto_filter.ref == "A1:K3"
-    kpi_row = next(row for row in rows if row[3] == "kpi")
-    assert kpi_row[1] == "(Untitled card) _Measures[Total Sales YTD]"
-    assert kpi_row[2] == "Generated from visual type and binding"
+    assert sheet.auto_filter.ref.startswith("A1:Q")
+    kpi_row = next(row for row in rows if row[2] == "kpi")
+    assert kpi_row[4] == "(Untitled card) _Measures[Total Sales YTD]"
+    assert "Displays" in kpi_row[11]
 
 
 def test_untitled_visual_name_is_explicit_in_impact_summary(tmp_path):
@@ -196,7 +197,9 @@ def test_untitled_visual_name_is_explicit_in_impact_summary(tmp_path):
     selection = _selection("measure", "_Measures", "Total Sales")
 
     baseline_estimation.build_report(_snapshot(), layout, [selection], str(output_path))
-    row = next(load_workbook(output_path)["Impact Summary"].iter_rows(min_row=2, values_only=True))
+    row = next(
+        row for row in load_workbook(output_path)["RTM"].iter_rows(min_row=2, values_only=True)
+        if row[2] == "kpi" and row[4])
 
     assert row[4] == "(Untitled card) _Measures[Total Sales YTD]"
 
@@ -225,31 +228,59 @@ def test_requirements_driven_report_and_history_round_trip(tmp_path):
     assert summary["mapped_objects"] >= 1
     workbook = load_workbook(output_path)
     assert workbook.sheetnames == [
-        "Object Summary", "Impact Summary", "Model Inventory", "Visual Inventory",
-        "Requirement Summary", "Requirement Traceability",
-        "Object Change History", "Unmapped Changes",
+        "RTM", "Requirement Copy", "Visual Impact by Requirement",
     ]
-    requirement_summary = list(
-        workbook["Requirement Summary"].iter_rows(min_row=2, values_only=True))
-    assert requirement_summary[0][0] == "R-1"
-    # Impacted Measures: Total Sales YTD (bound to the "Sales KPI" visual).
-    # Its dependency Total Sales is upstream - upstream references are not
-    # impacted by a change to the referenced object (established engine rule).
-    assert requirement_summary[0][7] == 1
+    requirement_rows = list(workbook["Requirement Copy"].iter_rows(min_row=2, values_only=True))
+    assert requirement_rows[0][0] == "R-1"
+    impact_rows = list(workbook["Visual Impact by Requirement"].iter_rows(min_row=2, values_only=True))
+    assert impact_rows[0][0] == "RE1_kpi_Overview_001"
+    assert impact_rows[0][5] == "kpi"
+    assert impact_rows[0][7] == "Sales KPI"
+    impact_headers = [cell.value for cell in workbook["Visual Impact by Requirement"][1]]
+    impact_record = dict(zip(impact_headers, impact_rows[0]))
+    assert impact_record["Visual Description"]
+    assert impact_record["Generated Date"] and impact_record["Generated Time"]
 
-    # Second run with a changed expression on the seeded visual's own measure
-    # (Total Sales YTD is bound to the "Sales KPI" visual) -> attributed
-    # Modified event.
-    changed = _snapshot()
-    changed["measures"]["_Measures"]["Total Sales YTD"] = _measure(
-        "CALCULATE(SUM(Sales[Amount]), DATESYTD(Calendar[Date]))")
-    summary = baseline_estimation.build_report(
-        changed, _layout(), str(output_path),
-        requirements_path=str(requirements_path), history_db_path=history_db)
 
-    history_rows = list(load_workbook(output_path)["Object Change History"].iter_rows(
-        min_row=2, values_only=True))
-    modified = next(row for row in history_rows if row[3] == "Modified")
-    assert modified[1] == "_Measures[Total Sales YTD]"
-    assert modified[7] == "R-1"
-    assert summary["unmapped_changes"] == 0
+def test_rtm_marks_latest_requirement_production_and_older_obsolete(tmp_path):
+    requirements_path = tmp_path / "requirements.xlsx"
+    from openpyxl import Workbook
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Requirements"
+    sheet.append([
+        "Requirement Number", "Requirement Type", "Raised Date", "Requested By",
+        "Business Owner", "Business Area", "Title", "Status", "Impacted Visual IDs",
+    ])
+    sheet.append([
+        "REQ_kpi_Overview_001", "New Requirement", "2026-01-01", "Alice",
+        "Finance Owner", "Finance", "Original KPI", "Done", "kpi",
+    ])
+    sheet.append([
+        "REQ_kpi_Overview_002", "Enhancement", "2026-02-01", "Bob",
+        "Finance Owner", "Finance", "Updated KPI", "Approved", "kpi",
+    ])
+    workbook.save(requirements_path)
+
+    output_path = tmp_path / "rtm.xlsx"
+    baseline_estimation.build_report(
+        _snapshot(), _layout(), str(output_path), requirements_path=str(requirements_path))
+    workbook = load_workbook(output_path)
+    rows = [dict(zip([cell.value for cell in workbook["RTM"][1]], row))
+            for row in workbook["RTM"].iter_rows(min_row=2, values_only=True)]
+    kpi_rows = [row for row in rows if row["Visual ID"] == "kpi"]
+    statuses = {row["Requirement Number"]: row["Requirement Status"] for row in kpi_rows}
+    assert statuses == {
+        "RE1_kpi_Overview_001": "Obsolete",
+        "RE1_kpi_Overview_002": "Production",
+    }
+
+
+def test_requirement_number_removes_all_page_whitespace(tmp_path):
+    output_path = tmp_path / "rtm.xlsx"
+    layout = _layout()
+    layout["pages"][0]["display_name"] = "Overview / Sales   Detail"
+    baseline_estimation.build_report(_snapshot(), layout, str(output_path))
+    workbook = load_workbook(output_path)
+    rows = list(workbook["RTM"].iter_rows(min_row=2, values_only=True))
+    assert rows[0][0] == "RE1_chart_OverviewSalesDetail_001"

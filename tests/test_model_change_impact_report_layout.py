@@ -32,6 +32,20 @@ def _write_zip(parts):
 
 class TestPbirFormat:
     def _build_pbix(self):
+        report_json = json.dumps({
+            "filterConfig": {
+                "filters": [
+                    {
+                        "name": "ReportRegionFilter",
+                        "type": "Categorical",
+                        "field": {"Column": {
+                            "Expression": {"SourceRef": {"Entity": "ReportFilterTable"}},
+                            "Property": "Region",
+                        }},
+                    }
+                ]
+            },
+        })
         pages_json = json.dumps({"pageOrder": ["page1"]})
         page_json = json.dumps({
             "displayName": "Sales Overview",
@@ -83,6 +97,7 @@ class TestPbirFormat:
             "visualGroup": {"displayName": "KPI Row", "groupMode": "Fixed"},
         })
         return _write_zip({
+            "Report/definition/report.json": report_json,
             "Report/definition/pages/pages.json": pages_json,
             "Report/definition/pages/page1/page.json": page_json,
             "Report/definition/pages/page1/visuals/visChart/visual.json": chart_visual,
@@ -99,6 +114,11 @@ class TestPbirFormat:
 
     def test_page_metadata_and_filters(self):
         result = report_layout.build_report_layout(self._build_pbix())
+        assert result["filters"] == [{
+            "name": "ReportRegionFilter",
+            "type": "Categorical",
+            "fields": [{"kind": "column", "table": "ReportFilterTable", "field": "Region"}],
+        }]
         page = result["pages"][0]
         assert page["page_id"] == "page1"
         assert page["display_name"] == "Sales Overview"
@@ -149,6 +169,22 @@ class TestPbirFormat:
 
 class TestLegacyFormat:
     def _build_pbix(self):
+        page_filters = json.dumps([{
+            "name": "PeriodFilter",
+            "type": "Categorical",
+            "expression": {"Column": {
+                "Expression": {"SourceRef": {"Entity": "001_PERIOD"}},
+                "Property": "PERIOD",
+            }},
+        }])
+        visual_filters = json.dumps([{
+            "name": "RefreshDateFilter",
+            "type": "Categorical",
+            "expression": {"Column": {
+                "Expression": {"SourceRef": {"Source": "d"}},
+                "Property": "DTS REFRESH DATE",
+            }},
+        }])
         chart_config = json.dumps({
             "singleVisual": {
                 "visualType": "clusteredColumnChart",
@@ -160,17 +196,18 @@ class TestLegacyFormat:
                     }
                 },
                 "prototypeQuery": {
+                    "From": [{"Name": "o", "Entity": "Orders", "Type": 0}],
                     "Select": [
                         {
                             "Column": {
-                                "Expression": {"SourceRef": {"Entity": "Orders"}},
+                                "Expression": {"SourceRef": {"Source": "o"}},
                                 "Property": "Region",
                             },
                             "Name": "Orders.Region",
                         },
                         {
                             "Measure": {
-                                "Expression": {"SourceRef": {"Entity": "Orders"}},
+                                "Expression": {"SourceRef": {"Source": "o"}},
                                 "Property": "Total Sales",
                             },
                             "Name": "Orders.Total Sales",
@@ -183,14 +220,56 @@ class TestLegacyFormat:
                 },
             }
         })
+        card_config = json.dumps({
+            "singleVisual": {
+                "visualType": "card",
+                "prototypeQuery": {
+                    "From": [{"Name": "d", "Entity": "DTS REFRESH DATE", "Type": 0}],
+                    "Select": [{
+                        "Aggregation": {
+                            "Expression": {"Column": {
+                                "Expression": {"SourceRef": {"Source": "d"}},
+                                "Property": "DTS REFRESH DATE",
+                            }},
+                            "Function": 4,
+                        },
+                        "Name": "Min(DTS REFRESH DATE.DTS REFRESH DATE)",
+                    }],
+                },
+                "projections": {
+                    "Values": [{"queryRef": "Min(DTS REFRESH DATE.DTS REFRESH DATE)"}],
+                },
+            }
+        })
+        slicer_config = json.dumps({
+            "singleVisual": {
+                "visualType": "slicer",
+                "prototypeQuery": {
+                    "From": [{"Name": "p", "Entity": "001_PERIOD", "Type": 0}],
+                    "Select": [{
+                        "Column": {
+                            "Expression": {"SourceRef": {"Source": "p"}},
+                            "Property": "PERIOD",
+                        },
+                        "Name": "001_PERIOD.PERIOD",
+                    }],
+                },
+                "projections": {
+                    "Values": [{"queryRef": "001_PERIOD.PERIOD"}],
+                },
+            }
+        })
         group_config = json.dumps({"name": "Legacy Group"})
         layout = {
             "sections": [
                 {
                     "name": "Section1",
                     "displayName": "Overview",
+                    "filters": page_filters,
                     "visualContainers": [
                         {"name": "visChart", "config": chart_config},
+                        {"name": "visCard", "config": card_config, "filters": visual_filters},
+                        {"name": "visSlicer", "config": slicer_config},
                         {"name": "visGroup", "config": group_config},
                     ],
                 }
@@ -216,7 +295,37 @@ class TestLegacyFormat:
         assert chart["display_name"] == "Regional sales"
         assert {"kind": "column", "table": "Orders", "field": "Region", "role": "Category"} in chart["fields"]
         assert {"kind": "measure", "table": "Orders", "field": "Total Sales", "role": "Y"} in chart["fields"]
+        card = visuals["visCard"]
+        assert {"kind": "column", "table": "DTS REFRESH DATE", "field": "DTS REFRESH DATE", "role": "Values"} in card["fields"]
+        assert card["filters"] == [{
+            "name": "RefreshDateFilter",
+            "type": "Categorical",
+            "fields": [{"kind": "column", "table": "DTS REFRESH DATE", "field": "DTS REFRESH DATE"}],
+        }]
+        slicer = visuals["visSlicer"]
+        assert slicer["visual_type"] == "slicer"
+        assert {"kind": "column", "table": "001_PERIOD", "field": "PERIOD", "role": "Values"} in slicer["fields"]
+        assert page["filters"] == [{
+            "name": "PeriodFilter",
+            "type": "Categorical",
+            "fields": [{"kind": "column", "table": "001_PERIOD", "field": "PERIOD"}],
+        }]
         assert visuals["visGroup"]["kind"] == "visualGroup"
+
+    def test_legacy_visual_without_name_gets_stable_fallback_id(self):
+        layout = {
+            "sections": [{
+                "name": "Section1",
+                "visualContainers": [{
+                    "config": json.dumps({"singleVisual": {"visualType": "card"}}),
+                }],
+            }],
+        }
+        pbix = _write_zip({"Report/Layout": json.dumps(layout).encode("utf-16")})
+
+        result = report_layout.build_report_layout(pbix)
+
+        assert result["pages"][0]["visuals"][0]["visual_id"] == "legacy:Section1:0"
 
 
 class TestNoLayoutPresent:

@@ -26,6 +26,7 @@ SHEET_NAME = "Requirements"
 
 MANDATORY_COLUMNS = ("Requirement ID", "Title", "Status")
 RECOMMENDED_COLUMNS = ("Description", "Priority", "Raised Date")
+REQUIREMENT_TYPE_VALUES = ("New Requirement", "Enhancement", "Bug Fix")
 OPTIONAL_COLUMNS = (
     "Business Owner", "Business Area", "Expected Change Date", "Notes",
 )
@@ -39,12 +40,15 @@ DEFAULT_PRIORITY = "Medium"
 
 _FIELD_BY_COLUMN = {
     "Requirement ID": "id",
+    "Requirement Number": "id",
+    "Requirement Type": "requirement_type",
     "Title": "title",
     "Status": "status",
     "Description": "description",
     "Priority": "priority",
     "Raised Date": "raised_date",
     "Business Owner": "business_owner",
+    "Requested By": "requested_by",
     "Business Area": "business_area",
     "Expected Change Date": "expected_change_date",
     "Impacted Pages": "impacted_pages",
@@ -172,6 +176,10 @@ def _build_requirement(values, row_number, warnings):
 
     requirement = {
         "id": values["id"],
+        "requirement_type": _normalize_choice(
+            values.get("requirement_type") or "New Requirement",
+            REQUIREMENT_TYPE_VALUES, f"Row {row_number} Requirement Type", warnings,
+        ),
         "title": values["title"],
         "status": status,
         "active": status not in INACTIVE_STATUSES,
@@ -179,6 +187,7 @@ def _build_requirement(values, row_number, warnings):
         "priority": priority,
         "raised_date": _date_text(values.get("raised_date"), row_number, "Raised Date", warnings),
         "business_owner": values.get("business_owner", ""),
+        "requested_by": values.get("requested_by", ""),
         "business_area": values.get("business_area", ""),
         "expected_change_date": _date_text(
             values.get("expected_change_date"), row_number, "Expected Change Date", warnings,

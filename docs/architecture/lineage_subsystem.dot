@@ -1,0 +1,43 @@
+digraph lineage_subsystem {
+  graph [rankdir=LR, bgcolor="white", pad="0.25", nodesep="0.35", ranksep="0.7", splines=ortho, fontname="Segoe UI", label="V1 lineage and dataflow export - verified flow", labelloc=t, fontsize=21];
+  node [shape=box, style="rounded,filled", fontname="Segoe UI", fontsize=10, margin="0.12,0.08", color="#475569"];
+  edge [fontname="Segoe UI", fontsize=8, color="#475569", arrowsize=0.7];
+  inputs [label="Home tab inputs\nPBIX path + dataflow folder\noutput folder + online lookup flag", fillcolor="#DBEAFE"];
+  worker [label="PipelineWorker.run()\narchive outputs\nset stdout emitter\ncatch errors / cancellation", fillcolor="#BFDBFE"];
+  build [label="reporting.lineage_report.build_report()\nPBIXRay model + Power Query M\nrelationships, DAX, usage", fillcolor="#CCFBF1"];
+  indexes [label="core.lineage_lib\nload dataflow JSON indexes\nGUID cache + entity fingerprints\nM dependency resolution", fillcolor="#CCFBF1"];
+  source [label="Resolution result per table\nphysical connector / status\nfound, union, unresolved, no_query\nmanual/access flags", fillcolor="#CCFBF1"];
+  main [label="lineage_report.write_workbook()\nmain lineage workbook\nused/unused/dataflow/transformations", fillcolor="#CCFBF1"];
+  companion [label="dataflow_table_report.build_and_save()\ncompanion table-lineage workbook", fillcolor="#CCFBF1"];
+  outputs [label="Generated_*_Lineage.xlsx\nDataflow_Table_Lineage_Report_*.xlsx", fillcolor="#FEF3C7"];
+  export_ui [label="Dataflow Export tab\nworkspace id + output folder", fillcolor="#DBEAFE"];
+  export_worker [label="DataflowExportWorker\nbackground subprocess orchestration", fillcolor="#BFDBFE"];
+  service [label="services.dataflow_export\nPopen PowerShell\nstream output + timeout\nparse ##RESULT##", fillcolor="#CCFBF1"];
+  script [label="Export-AllDataflows.ps1\nConnect-PowerBIServiceAccount\nGet workspace + REST list\nREST download each JSON", fillcolor="#EDE9FE"];
+  api [label="Power BI Service\ninteractive sign-in + dataflow REST", fillcolor="#EDE9FE"];
+  json [label="PowerBIDataflows/*.json", fillcolor="#FEF3C7"];
+  cache [label="guid_dataflow_names.json\nwrite-through mappings", fillcolor="#FEF3C7"];
+  lookup [label="Optional unresolved GUID lookup\nservices/guid_resolver.py\nResolve-DataflowNames.ps1", fillcolor="#EDE9FE", style="rounded,dashed,filled"];
+  failure [label="Failure paths\ninvalid paths -> InfoBar\nPermissionError -> close Excel hint\nsubprocess timeout/crash -> failed signal\nmanual review rows in output", fillcolor="#FEE2E2"];
+
+  inputs -> worker [label="Qt click -> QThread"];
+  worker -> build [label="function call"];
+  build -> indexes [label="load JSON + resolve references"];
+  indexes -> source [label="M/dataflow traversal"];
+  source -> main [label="rows + context"];
+  source -> companion [label="context"];
+  main -> outputs [label="openpyxl write"];
+  companion -> outputs [label="openpyxl write"];
+  worker -> failure [label="exception/cancel", style=dashed];
+  export_ui -> export_worker [label="Qt click -> QThread"];
+  export_worker -> service [label="function call"];
+  service -> script [label="powershell.exe\nstdout protocol", color="#7C3AED"];
+  script -> api [label="Power BI cmdlets + REST", dir=both, color="#7C3AED"];
+  script -> json [label="Out-File JSON"];
+  service -> cache [label="persist mappings"];
+  build -> lookup [label="only when online lookup enabled", style=dashed];
+  lookup -> api [label="Power BI REST", dir=both, style=dashed];
+  service -> failure [label="timeout / no result / failed result", style=dashed];
+  worker -> outputs [label="success summary -> UI", style=dashed];
+  legend [label="Legend\nsolid = implemented synchronous/data flow\ndashed = optional or error path\nred = error handling", fillcolor="white", style="rounded,dashed,filled"];
+}

@@ -23,6 +23,7 @@ import os
 import zipfile
 
 PBIR_PAGES_INDEX = "Report/definition/pages/pages.json"
+PBIR_REPORT_PART = "Report/definition/report.json"
 LEGACY_LAYOUT_PART = "Report/Layout"
 
 _KPI_LIKE_TYPES = {"card", "multirowcard", "cardvisual", "gauge"}
@@ -122,15 +123,19 @@ def _safe_basename(pbix_path):
 # since both formats express Column/Measure references the same way).
 # ---------------------------------------------------------------------------
 
-def _entity_and_property(column_or_measure):
+def _entity_and_property(column_or_measure, source_aliases=None):
     expression = column_or_measure.get("Expression", {}) if isinstance(column_or_measure, dict) else {}
     source_ref = expression.get("SourceRef", {}) if isinstance(expression, dict) else {}
-    entity = source_ref.get("Entity") if isinstance(source_ref, dict) else None
+    entity = None
+    if isinstance(source_ref, dict):
+        entity = source_ref.get("Entity")
+        if entity is None and source_aliases:
+            entity = source_aliases.get(source_ref.get("Source"))
     prop = column_or_measure.get("Property") if isinstance(column_or_measure, dict) else None
     return entity, prop
 
 
-def _extract_field_refs(node):
+def _extract_field_refs(node, source_aliases=None):
     """Recursively find Column/Measure/HierarchyLevel references inside a
     query-definition fragment. Recursing (rather than hardcoding every
     wrapper shape like Aggregation/Percentile) keeps this generic across
@@ -138,17 +143,20 @@ def _extract_field_refs(node):
     refs = []
     if isinstance(node, dict):
         if isinstance(node.get("Column"), dict):
-            entity, prop = _entity_and_property(node["Column"])
+            entity, prop = _entity_and_property(node["Column"], source_aliases)
             if entity or prop:
                 refs.append({"kind": "column", "table": entity, "field": prop})
         elif isinstance(node.get("Measure"), dict):
-            entity, prop = _entity_and_property(node["Measure"])
+            entity, prop = _entity_and_property(node["Measure"], source_aliases)
             if entity or prop:
                 refs.append({"kind": "measure", "table": entity, "field": prop})
         elif isinstance(node.get("HierarchyLevel"), dict):
             hl = node["HierarchyLevel"]
             hierarchy_expr = hl.get("Expression", {}).get("Hierarchy", {})
-            entity = hierarchy_expr.get("Expression", {}).get("SourceRef", {}).get("Entity")
+            source_ref = hierarchy_expr.get("Expression", {}).get("SourceRef", {})
+            entity = source_ref.get("Entity")
+            if entity is None and source_aliases:
+                entity = source_aliases.get(source_ref.get("Source"))
             hierarchy_name = hierarchy_expr.get("Hierarchy")
             level = hl.get("Level")
             if entity or hierarchy_name or level:
@@ -159,10 +167,10 @@ def _extract_field_refs(node):
                 })
         else:
             for value in node.values():
-                refs.extend(_extract_field_refs(value))
+                refs.extend(_extract_field_refs(value, source_aliases))
     elif isinstance(node, list):
         for item in node:
-            refs.extend(_extract_field_refs(item))
+            refs.extend(_extract_field_refs(item, source_aliases))
     return refs
 
 
@@ -188,6 +196,42 @@ def _extract_filters(filters_list):
             "name": f.get("name"),
             "type": f.get("type"),
             "fields": _extract_field_refs(f),
+        })
+    return out
+
+
+def _loads_jsonish(value, default):
+    if value in (None, ""):
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
+def _legacy_source_aliases(prototype_query):
+    aliases = {}
+    for item in (prototype_query or {}).get("From", []):
+        alias = item.get("Name")
+        entity = item.get("Entity")
+        if alias and entity:
+            aliases[alias] = entity
+    return aliases
+
+
+def _extract_legacy_filters(filters_value, source_aliases=None):
+    out = []
+    for f in _loads_jsonish(filters_value, []):
+        if not isinstance(f, dict):
+            continue
+        out.append({
+            "name": f.get("name"),
+            "type": f.get("type"),
+            "fields": _extract_field_refs(f, source_aliases),
         })
     return out
 
@@ -238,6 +282,9 @@ def _read_json(zf, name):
 
 def _parse_pbir(zf, names):
     pages_index = _read_json(zf, PBIR_PAGES_INDEX)
+    report_filters = []
+    if PBIR_REPORT_PART in names:
+        report_filters = _extract_filters(_read_json(zf, PBIR_REPORT_PART).get("filterConfig", {}).get("filters", []))
     pages = []
     for order, page_id in enumerate(pages_index.get("pageOrder", [])):
         page_part = f"Report/definition/pages/{page_id}/page.json"
@@ -251,7 +298,7 @@ def _parse_pbir(zf, names):
             "filters": _extract_filters(page_json.get("filterConfig", {}).get("filters", [])),
             "visuals": _parse_pbir_visuals(zf, names, page_id),
         })
-    return {"format": "pbir", "pages": pages, "unsupported_reason": None}
+    return {"format": "pbir", "filters": report_filters, "pages": pages, "unsupported_reason": None}
 
 
 def _parse_pbir_visuals(zf, names, page_id):
@@ -342,22 +389,25 @@ def _parse_legacy(zf):
         }
     pages = []
     for order, section in enumerate(layout.get("sections", [])):
+        page_id = section.get("name", str(order))
         pages.append({
-            "page_id": section.get("name", str(order)),
-            "display_name": section.get("displayName", section.get("name", str(order))),
+            "page_id": page_id,
+            "display_name": section.get("displayName", page_id),
             "order": order,
-            # Legacy page-level filters live in a JSON-string `section["filters"]`
-            # field; not parsed yet - treat as manual-review via unsupported_reason.
-            "filters": [],
-            "visuals": [_build_legacy_visual(vc) for vc in section.get("visualContainers", [])],
+            "filters": _extract_legacy_filters(section.get("filters")),
+            "visuals": [
+                _build_legacy_visual(vc, f"legacy:{page_id}:{visual_order}")
+                for visual_order, vc in enumerate(section.get("visualContainers", []))
+            ],
         })
     return {
         "format": "legacy_layout",
+        "filters": _extract_legacy_filters(layout.get("filters")),
         "pages": pages,
         "unsupported_reason": (
             "Legacy single-blob Report/Layout format detected. Parsing is "
-            "best-effort (field bindings/KPI classification are less battle-"
-            "tested than the PBIR path) - flag results for manual review."
+            "best-effort, especially for custom visuals and older filter shapes - "
+            "flag unusual results for manual review."
         ),
     }
 
@@ -377,15 +427,10 @@ def _legacy_visual_display_metadata(config):
     )
 
 
-def _build_legacy_visual(vc):
-    visual_id = vc.get("name", "")
+def _build_legacy_visual(vc, fallback_visual_id=None):
+    visual_id = vc.get("name") or fallback_visual_id or ""
     parent_group_id = vc.get("parentGroupName")
-    config = vc.get("config")
-    if isinstance(config, str):
-        try:
-            config = json.loads(config)
-        except (TypeError, ValueError):
-            config = {}
+    config = _loads_jsonish(vc.get("config"), {})
     if not isinstance(config, dict):
         config = {}
 
@@ -398,17 +443,19 @@ def _build_legacy_visual(vc):
             "group_mode": None,
             "parent_group_id": parent_group_id,
             "fields": [],
-            "filters": [],
+            "filters": _extract_legacy_filters(vc.get("filters")),
         }
 
     visual_type = single_visual.get("visualType")
-    select = single_visual.get("prototypeQuery", {}).get("Select", [])
+    prototype_query = single_visual.get("prototypeQuery", {})
+    source_aliases = _legacy_source_aliases(prototype_query)
+    select = prototype_query.get("Select", [])
     select_by_name = {}
     for entry in select:
         name = entry.get("Name")
         if not name:
             continue
-        refs = _extract_field_refs(entry)
+        refs = _extract_field_refs(entry, source_aliases)
         if refs:
             select_by_name[name] = refs[0]
 
@@ -430,7 +477,5 @@ def _build_legacy_visual(vc):
         "parent_group_id": parent_group_id,
         "kpi_classification": _classify_kpi(visual_type),
         "fields": fields,
-        # Legacy visual-level filters live in a JSON-string `vc["filters"]`
-        # field; not parsed yet - manual review via unsupported_reason.
-        "filters": [],
+        "filters": _extract_legacy_filters(vc.get("filters"), source_aliases),
     }

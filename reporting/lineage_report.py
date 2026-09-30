@@ -25,6 +25,8 @@ from collections import Counter
 import config
 from reporting import transformations_report as btr
 from services import fileutils
+from model_change_impact import report_layout as report_layout_module
+from model_change_impact.impact import _REF_RE
 
 PBIX_PATH = config.PBIX_PATH
 DATAFLOW_FOLDER = config.DATAFLOW_FOLDER
@@ -48,6 +50,23 @@ M_QUERY_REFERENCE_REVIEW_REASON = (
     "dataflow, and entity."
 )
 ACCESS_REQUIRED_TAG = "ACCESS REQUIRED - DATAFLOW NOT AVAILABLE"
+USAGE_KEYS = ("semantic_model", "relationship", "measure", "dax_reference",
+              "slicer", "visual", "page_filter", "report_filter", "visual_filter")
+USAGE_REASON_LABELS = {
+    "semantic_model": "Present in semantic model",
+    "relationship": "Used in relationship",
+    "measure": "Contains DAX measure",
+    "dax_reference": "Referenced by another measure/calculated column's DAX formula",
+    "slicer": "Used in slicer",
+    "visual": "Used in chart/table visual",
+    "page_filter": "Used in page filter",
+    "report_filter": "Used in report filter",
+    "visual_filter": "Used in visual filter",
+}
+UNUSED_TABLE_REASON = (
+    "Not found in relationships, measures, other DAX formulas, slicers, chart/table "
+    "visuals, page filters, report filters, or visual filters."
+)
 
 
 def _safe_column_set(df, col):
@@ -55,10 +74,133 @@ def _safe_column_set(df, col):
     return set(df[col]) if col in df.columns else set()
 
 
+def _empty_usage_flags():
+    return {key: False for key in USAGE_KEYS}
+
+
+def _mark_usage(table_usage, table, usage_key):
+    if not table:
+        return
+    table_usage.setdefault(str(table), _empty_usage_flags())[usage_key] = True
+
+
+def _is_slicer_visual(visual):
+    return "slicer" in str(visual.get("visual_type") or "").lower()
+
+
+def _mark_filter_usage(table_usage, filters, usage_key):
+    for filter_info in filters or []:
+        for field in filter_info.get("fields", []):
+            _mark_usage(table_usage, field.get("table"), usage_key)
+
+
+def _columns_by_table(model):
+    columns_by_table = {}
+    if "TableName" in getattr(model.schema, "columns", []) and "ColumnName" in model.schema.columns:
+        for table_name, group in model.schema.groupby("TableName"):
+            columns_by_table[str(table_name)] = set(group["ColumnName"].astype(str))
+    return columns_by_table
+
+
+def _mark_dax_cross_references(table_usage, model):
+    """A table used only by another object's DAX formula (no relationship
+    needed) still counts as used - self-referencing calculated columns
+    (a table's own formula naming itself) do not count as external usage."""
+    columns_by_table = _columns_by_table(model)
+    expression_sources = []
+    if "TableName" in getattr(model.dax_measures, "columns", []) and "Expression" in model.dax_measures.columns:
+        for _, row in model.dax_measures.iterrows():
+            expression_sources.append((str(row["TableName"]), row.get("Expression")))
+    if "TableName" in getattr(model.dax_columns, "columns", []) and "Expression" in model.dax_columns.columns:
+        for _, row in model.dax_columns.iterrows():
+            expression_sources.append((str(row["TableName"]), row.get("Expression")))
+
+    for owner_table, expression in expression_sources:
+        for quoted, unquoted, column_name in _REF_RE.findall(str(expression or "")):
+            table_token = quoted or unquoted
+            if not table_token or table_token == owner_table:
+                continue
+            if column_name in columns_by_table.get(table_token, ()):
+                _mark_usage(table_usage, table_token, "dax_reference")
+
+
+def _build_table_usage(model, report_layout=None):
+    table_usage = {
+        str(table): {**_empty_usage_flags(), "semantic_model": True}
+        for table in getattr(model, "tables", [])
+    }
+
+    for table in _safe_column_set(model.relationships, "FromTableName"):
+        _mark_usage(table_usage, table, "relationship")
+    for table in _safe_column_set(model.relationships, "ToTableName"):
+        _mark_usage(table_usage, table, "relationship")
+    for table in _safe_column_set(model.dax_measures, "TableName"):
+        _mark_usage(table_usage, table, "measure")
+    _mark_dax_cross_references(table_usage, model)
+
+    layout = report_layout or {}
+    _mark_filter_usage(table_usage, layout.get("filters", []), "report_filter")
+    for page in layout.get("pages", []):
+        _mark_filter_usage(table_usage, page.get("filters", []), "page_filter")
+        for visual in page.get("visuals", []):
+            field_usage_key = "slicer" if _is_slicer_visual(visual) else "visual"
+            for field in visual.get("fields", []):
+                _mark_usage(table_usage, field.get("table"), field_usage_key)
+            _mark_filter_usage(table_usage, visual.get("filters", []), "visual_filter")
+
+    return table_usage
+
+
+def _build_report_layout_usage(report_layout):
+    usage = {}
+    _mark_filter_usage(usage, report_layout.get("filters", []), "report_filter")
+    for page in report_layout.get("pages", []):
+        _mark_filter_usage(usage, page.get("filters", []), "page_filter")
+        for visual in page.get("visuals", []):
+            field_usage_key = "slicer" if _is_slicer_visual(visual) else "visual"
+            for field in visual.get("fields", []):
+                _mark_usage(usage, field.get("table"), field_usage_key)
+            _mark_filter_usage(usage, visual.get("filters", []), "visual_filter")
+    return usage
+
+
+def _usage_reason_from_flags(flags):
+    if not flags or not any(flags.values()):
+        return UNUSED_TABLE_REASON
+    active_keys = [key for key in USAGE_KEYS if flags.get(key)]
+    if active_keys == ["semantic_model"]:
+        return "Present in semantic model; no relationship, DAX, visual, slicer, or filter usage detected"
+    if active_keys == ["semantic_model", "slicer"]:
+        return "Present in semantic model; used only in slicer"
+    return "; ".join(USAGE_REASON_LABELS[key] for key in active_keys)
+
+
+def _is_slicer_only_usage(flags):
+    ignored_keys = {"semantic_model", "slicer"}
+    return bool(flags and flags.get("slicer") and not any(
+        flags.get(key) for key in USAGE_KEYS if key not in ignored_keys
+    ))
+
+
+def _unused_sheet_category(info):
+    flags = info.get("usage_flags", {})
+    if info.get("is_slicer_only") or _is_slicer_only_usage(flags):
+        return "Used only in slicer"
+    if flags.get("semantic_model") and not any(
+        flags.get(key) for key in USAGE_KEYS if key != "semantic_model"
+    ):
+        return "Semantic model only"
+    if not info.get("is_used"):
+        return "Unused table"
+    return None
+
+
 def _status_text(info):
     """Business-facing status used by the main report."""
     if not info["is_used"]:
         return "Tables not used in PBIX"
+    if info.get("is_slicer_only"):
+        return "Used only in slicer"
     if info.get("hard_unresolved"):
         return "No Access"
     if info.get("needs_override"):
@@ -211,8 +353,17 @@ def load_everything(pbix_path=None, dataflow_folder=None, online_guid_lookup=Fal
     entity_index = ll.build_entity_index(dataflows)
     name_index = ll.build_name_index(dataflows)
 
-    used_tables = _safe_column_set(model.relationships, "FromTableName") | _safe_column_set(model.relationships, "ToTableName")
-    used_tables |= _safe_column_set(model.dax_measures, "TableName")
+    try:
+        report_layout = report_layout_module.build_report_layout(pbix_path)
+    except Exception as exc:
+        report_layout = {
+            "format": "unavailable",
+            "pages": [],
+            "filters": [],
+            "unsupported_reason": f"Report layout could not be parsed: {exc}",
+        }
+    table_usage = _build_table_usage(model, report_layout)
+    used_tables = {table for table, flags in table_usage.items() if any(flags.values())}
 
     return {
         "model": model,
@@ -228,6 +379,8 @@ def load_everything(pbix_path=None, dataflow_folder=None, online_guid_lookup=Fal
         "name_index": name_index,
         "guid_cache": guid_cache,
         "guid_resolution": guid_resolution,
+        "report_layout": report_layout,
+        "table_usage": table_usage,
         "used_tables": used_tables,
     }
 
@@ -531,8 +684,12 @@ def build_report(pbix_path=None, dataflow_folder=None, cancellation_event=None, 
             raise RuntimeError("Pipeline cancelled.")
         info = resolve_table_row(t, ctx)
         is_used = t in ctx["used_tables"]
+        usage_flags = ctx.get("table_usage", {}).get(t, _empty_usage_flags())
         info["table"] = t
         info["is_used"] = is_used
+        info["usage_flags"] = usage_flags
+        info["usage_reason"] = _usage_reason_from_flags(usage_flags)
+        info["is_slicer_only"] = _is_slicer_only_usage(usage_flags)
         rows.append(info)
 
     return rows, ctx
@@ -578,9 +735,12 @@ def write_workbook(rows, ctx, output_path=None):
         ws.cell(row=r, column=8, value=info["folder"])
         ws.cell(row=r, column=9, value=info["file"])
 
+        unused_category = _unused_sheet_category(info)
+        if unused_category:
+            unused_tables.append((unused_category, info["table"], info.get("usage_reason") or UNUSED_TABLE_REASON))
+
         if not info["is_used"]:
             fill = RED_FILL
-            unused_tables.append(info["table"])
         elif info.get("hard_unresolved"):
             fill = GREY_FILL
         elif info.get("needs_override"):
@@ -615,10 +775,25 @@ def write_workbook(rows, ctx, output_path=None):
         ws2.cell(row=i, column=1, value=d)
     ws2.column_dimensions["A"].width = 60
 
+    model_tables = {str(info["table"]) for info in rows if info.get("table")}
+    report_only_slicer_tables = []
+    for table, flags in _build_report_layout_usage(ctx.get("report_layout", {})).items():
+        if table not in model_tables and _is_slicer_only_usage(flags):
+            report_only_slicer_tables.append(("Used only in slicer (not in semantic model)", table,
+                                              "Used only in slicer; table not found in semantic model."))
+    unused_tables.extend(sorted(report_only_slicer_tables, key=lambda row: row[1].casefold()))
+
     ws3 = wb.create_sheet("Unused tables")
-    for i, t in enumerate(unused_tables, start=1):
-        ws3.cell(row=i, column=1, value=t)
-    ws3.column_dimensions["A"].width = 45
+    ws3.cell(row=1, column=1, value="Category").font = Font(bold=True)
+    ws3.cell(row=1, column=2, value="Table Name").font = Font(bold=True)
+    ws3.cell(row=1, column=3, value="Reason").font = Font(bold=True)
+    for i, (category, table, reason) in enumerate(unused_tables, start=2):
+        ws3.cell(row=i, column=1, value=category)
+        ws3.cell(row=i, column=2, value=table)
+        ws3.cell(row=i, column=3, value=reason)
+    ws3.column_dimensions["A"].width = 24
+    ws3.column_dimensions["B"].width = 45
+    ws3.column_dimensions["C"].width = 90
 
     # --- Dataflow File Coverage sheet -------------------------------------
     # This is the accurate, hop-aware answer to "which of the N provided

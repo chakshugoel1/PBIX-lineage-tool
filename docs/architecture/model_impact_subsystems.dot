@@ -1,0 +1,48 @@
+digraph model_impact_subsystems {
+  graph [rankdir=LR, bgcolor="white", pad="0.25", nodesep="0.35", ranksep="0.7", splines=ortho, fontname="Segoe UI", label="V2 model change impact and baseline subsystems - verified flow", labelloc=t, fontsize=21];
+  node [shape=box, style="rounded,filled", fontname="Segoe UI", fontsize=10, margin="0.12,0.08", color="#475569"];
+  edge [fontname="Segoe UI", fontsize=8, color="#475569", arrowsize=0.7];
+  pbix_before [label="Baseline PBIX\nread-only input", fillcolor="#FEF3C7"];
+  pbix_after [label="Changed PBIX\nread-only input", fillcolor="#FEF3C7"];
+  snap_before [label="snapshot.build_snapshot()\nPBIXRay semantic metadata\noptional raw SQL enrichment", fillcolor="#CCFBF1"];
+  snap_after [label="snapshot.build_snapshot()\nPBIXRay semantic metadata\noptional raw SQL enrichment", fillcolor="#CCFBF1"];
+  layout_before [label="report_layout.build_report_layout()\nPBIR or legacy ZIP parsing\npages, visuals, fields, filters", fillcolor="#CCFBF1"];
+  layout_after [label="report_layout.build_report_layout()\nPBIR or legacy ZIP parsing\npages, visuals, fields, filters", fillcolor="#CCFBF1"];
+  diff [label="diff.diff_snapshots()\nstable lineage tags then identity\nadded/removed/changed/unchanged\nrename candidates", fillcolor="#CCFBF1"];
+  impact [label="impact.analyze_impact()\nDAX dependency graph\nreverse dependent walk\nvisual bindings + dangling refs", fillcolor="#CCFBF1"];
+  layout_diff [label="compare_report_layouts()\nmetadata-level visual diff\nnot pixel rendering", fillcolor="#CCFBF1"];
+  excel [label="excel_report.build_excel_report()\nSummary + Impact Summary\nchanged object sheets", fillcolor="#CCFBF1"];
+  baseline_ui [label="Baseline Estimation tab\none PBIX + optional Requirements.xlsx", fillcolor="#DBEAFE"];
+  base [label="baseline_estimation.build_report()\nselect/trace all objects\nrequirements mapping\nvisual descriptions", fillcolor="#CCFBF1"];
+  req [label="requirements.py + requirement_mapping.py\nvalidate workbook\nmap visual id/name/title\nexpand DAX dependencies", fillcolor="#CCFBF1"];
+  desc [label="visual_descriptions.py\nfingerprint + deterministic text\ncache/history reuse", fillcolor="#CCFBF1"];
+  rtm [label="RTM Excel output\nBaseline Estimation\nRequirement Copy\nVisual Impact by Requirement", fillcolor="#FEF3C7"];
+  history [label="history_store.py\nSQLite impact_history.db\nruns/object_state/change_events", fillcolor="#FEF3C7"];
+  errors [label="Errors\nunsupported layout flagged\nPBIX/Excel permission failures\nworker failed signal", fillcolor="#FEE2E2"];
+
+  pbix_before -> snap_before [label="PBIXRay"];
+  pbix_after -> snap_after [label="PBIXRay"];
+  pbix_before -> layout_before [label="ZIP read"];
+  pbix_after -> layout_after [label="ZIP read"];
+  snap_before -> diff [label="baseline snapshot"];
+  snap_after -> diff [label="changed snapshot"];
+  diff -> impact [label="changed objects"];
+  snap_before -> impact [label="DAX/model context"];
+  snap_after -> impact [label="DAX/model context"];
+  layout_after -> impact [label="changed visual bindings"];
+  layout_before -> layout_diff [label="before metadata"];
+  layout_after -> layout_diff [label="after metadata"];
+  impact -> excel [label="impact result"];
+  diff -> excel [label="diff result"];
+  layout_diff -> excel [label="actual report changes"];
+  excel -> rtm [label="openpyxl write"];
+  baseline_ui -> base [label="BaselineEstimationWorker"];
+  pbix_before -> base [label="one PBIX snapshot + layout"];
+  base -> req [label="optional requirements path", style=dashed];
+  req -> base [label="selections + attribution"];
+  base -> desc [label="visual rows"];
+  base -> history [label="record run"];
+  base -> rtm [label="openpyxl write"];
+  errors -> excel [label="failure/unsupported input", style=dashed];
+  legend [label="Legend\nsolid = verified call/data flow\ndashed = optional requirements path\nred = error/report limitation", fillcolor="white", style="rounded,dashed,filled"];
+}

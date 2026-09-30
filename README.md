@@ -172,19 +172,12 @@ or comparison file is required.
 3. Filter the generated Excel tables to the objects relevant to the planned
    development.
 
-The generated `Baseline_Estimation_<pbix name>.xlsx` analyzes every table,
-measure, column, and relationship in the PBIX and contains four filterable
-sheets:
-
-- `Object Summary` — one row per model object with direct, dependency-chain,
-  total unique visual, KPI visual, affected-page, and dependent-object counts.
-- `Impact Summary` — the same columns and row grain as Version 2: one row per
-  model object and affected visual. Objects with no matched visual retain one
-  `No visual binding found` row.
-- `Model Inventory` — every model object with its DAX/M definition, data type,
-  format, visibility, calculation, and relationship metadata where applicable.
-- `Visual Inventory` — one row per visual field binding, including page,
-  visual name, visual ID/type, KPI classification, bound object, and role.
+The generated `Baseline_Estimation_<pbix name>.xlsx` contains one consolidated
+`Baseline Estimation` worksheet. It includes every table, measure, column, and
+relationship, mapped to affected Visual IDs, page names, visual names, and
+impact basis. The first column, `Requirement ID`, is populated when the
+selected requirements workbook maps a Visual ID and is intentionally left
+blank otherwise. One Visual ID should be assigned to only one requirement.
 
 Configured visual titles are used as names. When a visual is genuinely
 untitled, the report says so explicitly and generates a useful label from its
@@ -194,6 +187,12 @@ the name.
 Measure and calculated-column dependencies are inferred from DAX references.
 Table and relationship selections deliberately use the same broad impact rule
 as Version 2 because they can alter filter propagation across many columns.
+
+When a requirements workbook is selected, separate requirement sheets are
+added without changing the baseline inventory. `Requirement Impact` lists the
+declared Visual IDs/pages/names and the model objects derived from their field
+bindings and dependency chains. Requirements with unmatched scope or no
+current impact are retained and marked for review.
 
 ## Manual-override data files (travel with the repo, not machine-specific)
 
