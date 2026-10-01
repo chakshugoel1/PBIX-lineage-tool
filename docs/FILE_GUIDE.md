@@ -25,6 +25,9 @@ This lists the purpose of each application file and groups data-heavy/generated 
 | `Icon.ico`, `Icon.png` | Application and installer icon assets. |
 | `.gitignore` | Excludes local environments, client inputs, exports, PBIP assets, and generated reports. |
 | `README.md` | Installation, usage, and workflow overview. Some Baseline Estimation details predate the current three-sheet RTM output; use the RTM context for that contract. |
+| `docs/USER_GUIDE.md` | Plain-language guide to the application tabs and common workflows. |
+| `docs/REQUIREMENTS_TEMPLATE_GUIDE.md` | Plain-language instructions for completing the requirements workbook. |
+| `templates/Requirements_Template.xlsx` | Ready-to-fill requirements workbook for Baseline Estimation. |
 
 ## Root: local inputs and outputs
 

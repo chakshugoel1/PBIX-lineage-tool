@@ -23,6 +23,15 @@ there's nothing to code-sign. Re-running `Install.cmd` later also updates
 the tool in place (`git pull` + dependency re-install) — the same thing the
 in-app "Check for Updates" button on the About page does.
 
+## User documentation
+
+- [User Guide](docs/USER_GUIDE.md) - explains each application tab and the
+  common workflows.
+- [Requirements Workbook Guide](docs/REQUIREMENTS_TEMPLATE_GUIDE.md) -
+  explains how to complete the requirements workbook.
+- [Requirements Template](templates/Requirements_Template.xlsx) - ready to
+  fill in and use with Baseline Estimation.
+
 ## Requirements
 
 - Python **3.12** (pbixray does not ship wheels for 3.14+; this must be the
