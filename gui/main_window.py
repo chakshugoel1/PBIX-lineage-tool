@@ -888,6 +888,24 @@ class AboutInterface(QWidget):
         self.update_status = BodyLabel("", self)
         layout.addWidget(self.update_status)
 
+        documentation_row = QHBoxLayout()
+        self.user_guide_button = PushButton(FIF.DOCUMENT, "Open User Guide", self)
+        self.user_guide_button.clicked.connect(
+            lambda: self._open_document("docs/USER_GUIDE.md"))
+        self.requirements_guide_button = PushButton(
+            FIF.DOCUMENT, "Requirements Guide", self)
+        self.requirements_guide_button.clicked.connect(
+            lambda: self._open_document("docs/REQUIREMENTS_TEMPLATE_GUIDE.md"))
+        self.requirements_template_button = PushButton(
+            FIF.DOCUMENT, "Requirements Template", self)
+        self.requirements_template_button.clicked.connect(
+            lambda: self._open_document("templates/Requirements_Template.xlsx"))
+        documentation_row.addWidget(self.user_guide_button)
+        documentation_row.addWidget(self.requirements_guide_button)
+        documentation_row.addWidget(self.requirements_template_button)
+        documentation_row.addStretch(1)
+        layout.addLayout(documentation_row)
+
         layout.addWidget(BodyLabel(
             "If the app seems stuck, or keeps showing an error that should already be "
             "fixed, use Hard Reset: it stops any run in progress, kills any background "
@@ -912,6 +930,13 @@ class AboutInterface(QWidget):
         cfg = app_settings.load()
         cfg["theme"] = "dark" if checked else "light"
         app_settings.save(cfg)
+
+    def _open_document(self, relative_path):
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), relative_path)
+        if os.path.isfile(path):
+            os.startfile(path)
+        else:
+            self.update_status.setText(f"Documentation file not found: {relative_path}")
 
     def _on_check_update(self):
         self._start_update_check()
