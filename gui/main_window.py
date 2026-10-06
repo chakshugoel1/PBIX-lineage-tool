@@ -708,6 +708,9 @@ class BaselineEstimationInterface(QWidget):
         self.generate_button = PrimaryPushButton(FIF.SEARCH_MIRROR, "Generate Baseline Impact", self)
         self.generate_button.clicked.connect(self._on_generate_clicked)
         run_row.addWidget(self.generate_button)
+        self.clear_history_button = PushButton("Clear History", self)
+        self.clear_history_button.clicked.connect(self._on_clear_history_clicked)
+        run_row.addWidget(self.clear_history_button)
         run_row.addStretch(1)
         self.toggle_log_button = PushButton("Show Log", self)
         self.toggle_log_button.clicked.connect(self._toggle_log)
@@ -780,6 +783,39 @@ class BaselineEstimationInterface(QWidget):
         if path:
             self.requirements_edit.setText(path)
 
+    def _on_clear_history_clicked(self):
+        pbix_path = self.pbix_edit.text().strip()
+        if not pbix_path or not os.path.isfile(pbix_path):
+            InfoBar.error("Missing PBIX file", "Select a valid .pbix file first.", parent=self,
+                          position=InfoBarPosition.TOP)
+            return
+
+        output_folder = self.output_edit.text().strip() or os.path.dirname(pbix_path)
+        model_key = config.pbix_stem(pbix_path)
+        box = MessageBox(
+            "Clear History",
+            f"This permanently clears stored requirement and change history for {model_key}. "
+            "The current report file will remain, but its carried-forward history will be "
+            "ignored the next time you generate a report. Continue?",
+            self,
+        )
+        if not box.exec():
+            return
+
+        try:
+            from model_change_impact import history_store
+            db_path = history_store.default_db_path(output_folder)
+            history_store.clear_model_history(db_path, model_key)
+        except Exception as exc:
+            InfoBar.error("Could not clear history", str(exc), parent=self,
+                          position=InfoBarPosition.TOP, duration=8000)
+            return
+
+        InfoBar.success(
+            "History cleared", "The next generated report will start a fresh history.",
+            parent=self, position=InfoBarPosition.TOP, duration=5000,
+        )
+
     def _toggle_log(self):
         visible = not self.log_view.isVisible()
         self.log_view.setVisible(visible)
@@ -812,6 +848,7 @@ class BaselineEstimationInterface(QWidget):
         output_path = os.path.join(
             output_folder, f"Baseline_Estimation_{config.pbix_stem(pbix_path)}.xlsx")
         self.generate_button.setEnabled(False)
+        self.clear_history_button.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.log_view.clear()
         self.open_report_button.setEnabled(False)
@@ -825,6 +862,7 @@ class BaselineEstimationInterface(QWidget):
 
     def _on_estimation_finished(self, summary):
         self.generate_button.setEnabled(True)
+        self.clear_history_button.setEnabled(True)
         self.progress_bar.setVisible(False)
         self._last_output_path = summary["output_path"]
         self.objects_card.set_value(summary["model_objects"])
@@ -847,6 +885,7 @@ class BaselineEstimationInterface(QWidget):
 
     def _on_failed(self, message):
         self.generate_button.setEnabled(True)
+        self.clear_history_button.setEnabled(True)
         self.progress_bar.setVisible(False)
         InfoBar.error("Baseline estimation failed", message, parent=self,
                       position=InfoBarPosition.TOP, duration=8000)

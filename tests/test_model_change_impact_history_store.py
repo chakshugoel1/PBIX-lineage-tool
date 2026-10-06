@@ -148,3 +148,37 @@ def test_missing_database_returns_empty(tmp_path):
 def test_default_db_path_layout():
     path = history_store.default_db_path(r"C:\out")
     assert path.replace("/", "\\").endswith(r"previous_runs\history\impact_history.db")
+
+
+def test_requirement_timestamps_are_immutable_and_new_requirements_get_run_time(tmp_path):
+    db = str(tmp_path / "history.db")
+    first = history_store.record_requirement_timestamps(
+        db, "Demo", [{"id": "R-1"}], run_at="2026-09-14T10:00:00")
+    second = history_store.record_requirement_timestamps(
+        db, "Demo", [{"id": "R-1"}, {"id": "R-2"}],
+        run_at="2026-09-15T11:30:00")
+
+    assert first["r-1"] == ("2026-09-14", "10:00:00")
+    assert second == {
+        "r-1": ("2026-09-14", "10:00:00"),
+        "r-2": ("2026-09-15", "11:30:00"),
+    }
+
+
+def test_clear_model_history_starts_fresh_and_marks_next_report(tmp_path):
+    db = str(tmp_path / "history.db")
+    history_store.record_run(db, "Demo", _snapshot(), run_at="2026-09-14T10:00:00")
+    history_store.record_requirement_timestamps(
+        db, "Demo", [{"id": "R-1"}], run_at="2026-09-14T10:00:00")
+
+    history_store.clear_model_history(db, "Demo")
+
+    assert history_store.get_object_history(db, "Demo") == {}
+    assert history_store.list_change_events(db, "Demo") == []
+    assert history_store.history_reset_pending(db, "Demo") is True
+    timestamps = history_store.record_requirement_timestamps(
+        db, "Demo", [{"id": "R-1"}], run_at="2026-09-15T11:30:00")
+    assert timestamps["r-1"] == ("2026-09-15", "11:30:00")
+
+    history_store.complete_history_reset(db, "Demo")
+    assert history_store.history_reset_pending(db, "Demo") is False

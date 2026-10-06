@@ -60,11 +60,105 @@ CREATE TABLE IF NOT EXISTS change_events (
 );
 CREATE INDEX IF NOT EXISTS idx_change_events_key
     ON change_events (model_key, object_key);
+CREATE TABLE IF NOT EXISTS requirement_first_seen (
+    model_key TEXT NOT NULL,
+    requirement_id_key TEXT NOT NULL,
+    requirement_id TEXT NOT NULL,
+    generated_date TEXT NOT NULL,
+    generated_time TEXT NOT NULL,
+    PRIMARY KEY (model_key, requirement_id_key)
+);
+CREATE TABLE IF NOT EXISTS history_control (
+    model_key TEXT PRIMARY KEY,
+    reset_pending INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
 def default_db_path(output_folder):
     return os.path.join(output_folder, "previous_runs", "history", DEFAULT_DB_NAME)
+
+
+def record_requirement_timestamps(db_path, model_key, requirements, run_at=None,
+                                 legacy_timestamps=None):
+    """Return immutable first-generated date/time values keyed by requirement ID.
+
+    Existing workbook values are imported only when no stored timestamp exists,
+    preserving history for databases created before this registry was added.
+    """
+    run_at = run_at or datetime.datetime.now().isoformat(timespec="seconds")
+    generated_date, _, generated_time = run_at.partition("T")
+    legacy_timestamps = {
+        str(key).casefold(): value for key, value in (legacy_timestamps or {}).items()
+    }
+    connection = _connect(db_path)
+    try:
+        cursor = connection.cursor()
+        for requirement in requirements:
+            requirement_id = str(requirement["id"])
+            requirement_key = requirement_id.casefold()
+            previous = legacy_timestamps.get(requirement_key, ("", ""))
+            old_date, old_time = previous
+            cursor.execute(
+                "INSERT OR IGNORE INTO requirement_first_seen "
+                "(model_key, requirement_id_key, requirement_id, generated_date, generated_time) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (model_key, requirement_key, requirement_id,
+                 old_date or generated_date, old_time or generated_time),
+            )
+        connection.commit()
+        rows = cursor.execute(
+            "SELECT requirement_id_key, generated_date, generated_time "
+            "FROM requirement_first_seen WHERE model_key = ?",
+            (model_key,),
+        ).fetchall()
+    finally:
+        connection.close()
+    return {key: (date, time) for key, date, time in rows}
+
+
+def history_reset_pending(db_path, model_key):
+    """Whether the next report should ignore workbook-carried history."""
+    if not os.path.exists(db_path):
+        return False
+    connection = _connect(db_path)
+    try:
+        row = connection.execute(
+            "SELECT reset_pending FROM history_control WHERE model_key = ?", (model_key,),
+        ).fetchone()
+        return bool(row and row[0])
+    finally:
+        connection.close()
+
+
+def clear_model_history(db_path, model_key):
+    """Clear stored history for one PBIX and mark its next report as a fresh start."""
+    connection = _connect(db_path)
+    try:
+        for table in ("change_events", "object_state", "runs", "requirement_first_seen"):
+            connection.execute(f"DELETE FROM {table} WHERE model_key = ?", (model_key,))
+        connection.execute(
+            "INSERT INTO history_control (model_key, reset_pending) VALUES (?, 1) "
+            "ON CONFLICT(model_key) DO UPDATE SET reset_pending = 1",
+            (model_key,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def complete_history_reset(db_path, model_key):
+    """Allow workbook-carried history again after a fresh report was written."""
+    if not os.path.exists(db_path):
+        return
+    connection = _connect(db_path)
+    try:
+        connection.execute(
+            "UPDATE history_control SET reset_pending = 0 WHERE model_key = ?", (model_key,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def object_key(kind, *parts):

@@ -1,7 +1,8 @@
 """Tests for one-PBIX, selection-based baseline impact estimation."""
 from openpyxl import load_workbook
+from datetime import datetime as DateTime
 
-from model_change_impact import baseline_estimation
+from model_change_impact import baseline_estimation, history_store
 
 
 def _column(name):
@@ -204,13 +205,15 @@ def test_untitled_visual_name_is_explicit_in_impact_summary(tmp_path):
     assert row[4] == "(Untitled card) _Measures[Total Sales YTD]"
 
 
-def _write_requirements(path):
+def _write_requirements(path, requirements=None):
     from openpyxl import Workbook
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Requirements"
     sheet.append(["Requirement ID", "Title", "Status", "Priority", "Impacted Visuals"])
-    sheet.append(["R-1", "Sales KPI rework", "Approved", "High", "Sales KPI"])
+    for requirement in (requirements or [("R-1", "Sales KPI rework")]):
+        requirement_id, title, *scope = requirement
+        sheet.append([requirement_id, title, "Approved", "High", scope[0] if scope else "Sales KPI"])
     workbook.save(path)
 
 
@@ -240,6 +243,30 @@ def test_requirements_driven_report_and_history_round_trip(tmp_path):
     impact_record = dict(zip(impact_headers, impact_rows[0]))
     assert impact_record["Visual Description"]
     assert impact_record["Generated Date"] and impact_record["Generated Time"]
+
+
+def test_summary_counts_only_latest_requirement_rows(tmp_path):
+    requirements_path = tmp_path / "requirements.xlsx"
+    _write_requirements(requirements_path, [
+        ("R-1", "Previous KPI requirement"),
+        ("R-2", "Latest KPI requirement"),
+        ("R-3", "Chart requirement", "Sales Chart"),
+    ])
+    output_path = tmp_path / "latest-only.xlsx"
+
+    summary = baseline_estimation.build_report(
+        _snapshot(), _layout(), str(output_path), requirements_path=str(requirements_path))
+
+    assert summary["requirements"] == 2
+    assert summary["impact_rows"] == 2
+    assert summary["impacted_visuals"] == 2
+    assert summary["kpi_visuals"] == 1
+    assert summary["affected_pages"] == 1
+    workbook = load_workbook(output_path)
+    impact_sheet = workbook["Visual Impact by Requirement"]
+    rows = list(impact_sheet.iter_rows(min_row=2, values_only=True))
+    assert len(rows) == 3
+    assert {row[1] for row in rows} == {"Obsolete", "Production"}
 
 
 def test_rtm_marks_latest_requirement_production_and_older_obsolete(tmp_path):
@@ -274,6 +301,77 @@ def test_rtm_marks_latest_requirement_production_and_older_obsolete(tmp_path):
         "RE1_kpi_Overview_001": "Obsolete",
         "RE1_kpi_Overview_002": "Production",
     }
+
+
+def test_requirement_timestamps_survive_later_runs_and_new_ids_get_new_timestamp(
+        tmp_path, monkeypatch):
+    requirements_path = tmp_path / "requirements.xlsx"
+    output_path = tmp_path / "baseline.xlsx"
+    history_db = str(tmp_path / "history" / "impact_history.db")
+    now = [DateTime(2026, 9, 14, 10, 0, 0)]
+
+    class FixedClock:
+        @staticmethod
+        def now():
+            return now[0]
+
+    monkeypatch.setattr(baseline_estimation, "datetime", FixedClock)
+    _write_requirements(requirements_path, [("R-1", "Original")])
+    baseline_estimation.build_report(
+        _snapshot(), _layout(), str(output_path), requirements_path=str(requirements_path),
+        history_db_path=history_db)
+
+    now[0] = DateTime(2026, 9, 15, 11, 30, 0)
+    _write_requirements(requirements_path, [("R-1", "Original"), ("R-2", "New change")])
+    baseline_estimation.build_report(
+        _snapshot(), _layout(), str(output_path), requirements_path=str(requirements_path),
+        history_db_path=history_db)
+
+    workbook = load_workbook(output_path)
+    requirement_sheet = workbook["Requirement Copy"]
+    headers = [cell.value for cell in requirement_sheet[1]]
+    rows = [dict(zip(headers, row))
+            for row in requirement_sheet.iter_rows(min_row=2, values_only=True)]
+    generated = {row["Requirement Number"]: (
+        row["Generated Date"], row["Generated Time"]) for row in rows}
+    assert generated == {
+        "R-1": ("2026-09-14", "10:00:00"),
+        "R-2": ("2026-09-15", "11:30:00"),
+    }
+
+
+def test_history_reset_ignores_old_workbook_rows_and_restarts_timestamps(tmp_path, monkeypatch):
+    requirements_path = tmp_path / "requirements.xlsx"
+    output_path = tmp_path / "baseline.xlsx"
+    history_db = str(tmp_path / "history" / "impact_history.db")
+    now = [DateTime(2026, 9, 14, 10, 0, 0)]
+
+    class FixedClock:
+        @staticmethod
+        def now():
+            return now[0]
+
+    monkeypatch.setattr(baseline_estimation, "datetime", FixedClock)
+    _write_requirements(requirements_path, [("R-1", "Original")])
+    baseline_estimation.build_report(
+        _snapshot(), _layout(), str(output_path), requirements_path=str(requirements_path),
+        history_db_path=history_db)
+
+    history_store.clear_model_history(history_db, "baseline")
+    now[0] = DateTime(2026, 9, 15, 11, 30, 0)
+    _write_requirements(requirements_path, [("R-2", "Fresh start")])
+    baseline_estimation.build_report(
+        _snapshot(), _layout(), str(output_path), requirements_path=str(requirements_path),
+        history_db_path=history_db)
+
+    workbook = load_workbook(output_path)
+    impact_sheet = workbook["Visual Impact by Requirement"]
+    headers = [cell.value for cell in impact_sheet[1]]
+    rows = [dict(zip(headers, row)) for row in impact_sheet.iter_rows(min_row=2, values_only=True)]
+    assert {row["Requirement Title"] for row in rows} == {"Fresh start"}
+    assert rows[0]["Generated Date"] == "2026-09-15"
+    assert rows[0]["Generated Time"] == "11:30:00"
+    assert not history_store.history_reset_pending(history_db, "baseline")
 
 
 def test_requirement_number_removes_all_page_whitespace(tmp_path):

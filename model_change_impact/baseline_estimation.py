@@ -159,44 +159,90 @@ def build_report(snapshot, report_layout, selections_or_output_path, output_path
     _apply_generated_at(baseline_rows, generated_date, generated_time)
     requirements = requirements_data["requirements"] if requirements_data else []
     mapping = requirements_data["mapping"] if requirements_data else {}
-    previous_history = _load_previous_history(output_path)
+    history_model_key = os.path.splitext(os.path.basename(snapshot.get("source_file") or "model"))[0]
+    reset_pending = False
+    if history_db_path:
+        from model_change_impact import history_store
+        reset_pending = history_store.history_reset_pending(history_db_path, history_model_key)
+    previous_history = (
+        {"rtm": [], "impact": [], "requirements": []}
+        if reset_pending else _load_previous_history(output_path)
+    )
+    legacy_timestamps = {
+        str(row.get("Requirement Number", "")).casefold(): (
+            str(row.get("Generated Date") or ""), str(row.get("Generated Time") or ""))
+        for row in previous_history.get("requirements", [])
+        if row.get("Requirement Number")
+    }
+    if history_db_path:
+        requirement_timestamps = history_store.record_requirement_timestamps(
+            history_db_path, history_model_key, requirements,
+            run_at=generated_at.isoformat(timespec="seconds"),
+            legacy_timestamps={} if reset_pending else legacy_timestamps,
+        )
+    else:
+        requirement_timestamps = dict(legacy_timestamps)
+    for requirement in requirements:
+        requirement_timestamps.setdefault(
+            requirement["id"].casefold(), (generated_date, generated_time))
     requirement_numbers = _requirement_numbers(
         requirements, mapping, baseline_rows, previous_history)
     rtm_rows = _build_rtm_rows(
-        requirements, mapping, baseline_rows, requirement_numbers, previous_history)
+        requirements, mapping, baseline_rows, requirement_numbers, previous_history,
+        requirement_timestamps)
     _write_rtm_sheet(sheet, rtm_rows)
     _write_rows(workbook.create_sheet("Requirement Copy"), REQUIREMENT_HEADERS,
-                _build_requirement_rows(requirements, baseline_rows, generated_date, generated_time))
+                _build_requirement_rows(
+                    requirements, baseline_rows, generated_date, generated_time,
+                    requirement_timestamps))
     impact_rows = _build_visual_requirement_rows(
         requirements, mapping, baseline_rows, requirement_numbers, previous_history,
-        generated_date, generated_time)
+        generated_date, generated_time, requirement_timestamps)
     _write_rows(workbook.create_sheet("Visual Impact by Requirement"),
                 IMPACT_HEADERS, impact_rows)
 
     if output_dir and not os.path.isdir(output_dir):
         os.makedirs(output_dir, exist_ok=True)
     fileutils.atomic_replace_workbook(workbook, output_path)
+    if reset_pending:
+        history_store.complete_history_reset(history_db_path, history_model_key)
 
-    active_requirements = (
-        sum(1 for req in requirements_data["requirements"] if req.get("active", True))
-        if requirements_data else 0
-    )
+    if requirements_data:
+        latest_requirement_ids = _latest_requirement_ids(requirements, mapping)
+        current_impact_rows = [
+            row for row in impact_rows if row.get("Requirement Status") == "Production"
+        ]
+        current_object_keys = {
+            object_key
+            for requirement_id in latest_requirement_ids
+            for object_key in mapping.get(requirement_id, {}).get("objects", {})
+        }
+        current_model_objects = len(current_object_keys)
+        current_requirement_count = len(latest_requirement_ids)
+    else:
+        current_impact_rows = impact_rows
+        current_model_objects = len({selection_key(item) for item in selections})
+        current_requirement_count = 0
+
     return {
         "output_path": output_path,
-        "selected_objects": len({selection_key(item) for item in selections}),
-        "model_objects": len({selection_key(item) for item in selections}),
-        "requirements": active_requirements,
-        "mapped_objects": len({key for entry in mapping.values() for key in entry["objects"]}),
+        "selected_objects": current_model_objects,
+        "model_objects": current_model_objects,
+        "requirements": current_requirement_count,
+        "mapped_objects": current_model_objects,
         "unmapped_changes": 0,
-        "impact_rows": len(impact_rows),
+        "impact_rows": len(current_impact_rows),
         "impacted_visuals": len({
-            row["Visual ID"] for row in impact_rows if row.get("Visual ID")
+            row["Visual ID"] for row in current_impact_rows if row.get("Visual ID")
         }),
         "affected_pages": len({
-            row["Page Name"] for row in impact_rows if row.get("Page Name")
+            page.strip()
+            for row in current_impact_rows
+            for page in (row.get("Page Name") or "").split("; ")
+            if page.strip()
         }),
         "kpi_visuals": len({
-            row["Visual ID"] for row in impact_rows
+            row["Visual ID"] for row in current_impact_rows
             if row.get("Visual ID") and row.get("KPI Classification") in ("certain", "heuristic")
         }),
         "rows": impact_rows,
@@ -390,17 +436,31 @@ def _requirement_status_by_visual(requirements, mapping):
     return statuses
 
 
+def _latest_requirement_ids(requirements, mapping):
+    """Return requirement IDs that are Production for at least one visual."""
+    statuses = _requirement_status_by_visual(requirements, mapping)
+    return {
+        requirement_id
+        for requirement_id, entry in mapping.items()
+        if any(
+            statuses.get(visual_id, {}).get(requirement_id) == "Production"
+            for _page_id, visual_id in entry.get("visuals", {})
+        )
+    }
+
+
 def _load_previous_history(output_path):
     """Read the prior RTM and impact rows before the output is replaced."""
     if not os.path.exists(output_path):
-        return {"rtm": [], "impact": []}
+        return {"rtm": [], "impact": [], "requirements": []}
     try:
         workbook = load_workbook(output_path, read_only=True, data_only=True)
     except Exception:
-        return {"rtm": [], "impact": []}
+        return {"rtm": [], "impact": [], "requirements": []}
 
     history = {}
-    for sheet_name, key in (("RTM", "rtm"), ("Visual Impact by Requirement", "impact")):
+    for sheet_name, key in (("RTM", "rtm"), ("Visual Impact by Requirement", "impact"),
+                            ("Requirement Copy", "requirements")):
         if sheet_name not in workbook.sheetnames:
             history[key] = []
             continue
@@ -457,7 +517,9 @@ def _requirement_numbers(requirements, mapping, baseline_rows, previous_history)
     return result
 
 
-def _build_rtm_rows(requirements, mapping, baseline_rows, requirement_numbers, previous_history):
+def _build_rtm_rows(requirements, mapping, baseline_rows, requirement_numbers, previous_history,
+                    requirement_timestamps=None):
+    requirement_timestamps = requirement_timestamps or {}
     status_by_visual = _requirement_status_by_visual(requirements, mapping)
     baseline_by_visual = {row["Visual ID"]: row for row in baseline_rows}
     mapped_ids = {visual_id for entry in mapping.values() for _, visual_id in entry.get("visuals", {})}
@@ -478,6 +540,10 @@ def _build_rtm_rows(requirements, mapping, baseline_rows, requirement_numbers, p
                 (requirement_id, visual_id), baseline["Requirement Number"])
             row["Requirement Status"] = status_by_visual.get(visual_id, {}).get(
                 requirement_id, "Production" if visual_id not in mapped_ids else "")
+            if requirement:
+                row["Generated Date"], row["Generated Time"] = requirement_timestamps.get(
+                    requirement_id.casefold(), (row.get("Generated Date", ""),
+                                                 row.get("Generated Time", "")))
             rows.append(row)
 
         current_numbers = {
@@ -514,27 +580,41 @@ def _write_rtm_sheet(sheet, rows):
     excel_report._autofit_columns(sheet)
 
 
-def _build_requirement_rows(requirements, baseline_rows, generated_date, generated_time):
+def _build_requirement_rows(requirements, baseline_rows, generated_date, generated_time,
+                            requirement_timestamps=None):
+    requirement_timestamps = requirement_timestamps or {}
     if requirements:
-        return [{
-            "Requirement Number": req["id"], "Requirement Type": req.get("requirement_type", "New Requirement"),
-            "Raised Date": req.get("raised_date", ""), "Requested By": req.get("requested_by", ""),
-            "Business Owner": req.get("business_owner", ""), "Business Area": req.get("business_area", ""),
-            "Title": req["title"], "Status": req["status"],
-            "Description": req.get("description", ""), "Priority": req.get("priority", ""),
-            "Expected Change Date": req.get("expected_change_date", ""),
-            "Impacted Pages": req.get("impacted_pages", ""),
-            "Impacted Visuals": req.get("impacted_visuals", ""),
-            "Impacted Visual IDs": req.get("impacted_visual_ids", ""), "Notes": req.get("notes", ""),
-            "Generated Date": generated_date, "Generated Time": generated_time,
-        } for req in requirements]
+        rows = []
+        for req in requirements:
+            requirement_date, requirement_time = requirement_timestamps.get(
+                req["id"].casefold(), (generated_date, generated_time))
+            rows.append({
+                "Requirement Number": req["id"],
+                "Requirement Type": req.get("requirement_type", "New Requirement"),
+                "Raised Date": req.get("raised_date", ""),
+                "Requested By": req.get("requested_by", ""),
+                "Business Owner": req.get("business_owner", ""),
+                "Business Area": req.get("business_area", ""),
+                "Title": req["title"], "Status": req["status"],
+                "Description": req.get("description", ""),
+                "Priority": req.get("priority", ""),
+                "Expected Change Date": req.get("expected_change_date", ""),
+                "Impacted Pages": req.get("impacted_pages", ""),
+                "Impacted Visuals": req.get("impacted_visuals", ""),
+                "Impacted Visual IDs": req.get("impacted_visual_ids", ""),
+                "Notes": req.get("notes", ""),
+                "Generated Date": requirement_date, "Generated Time": requirement_time,
+            })
+        return rows
     return [{"Requirement Number": row["Requirement Number"],
              "Generated Date": generated_date, "Generated Time": generated_time}
             for row in baseline_rows]
 
 
 def _build_visual_requirement_rows(requirements, mapping, baseline_rows, requirement_numbers=None,
-                                   previous_history=None, generated_date="", generated_time=""):
+                                   previous_history=None, generated_date="", generated_time="",
+                                   requirement_timestamps=None):
+    requirement_timestamps = requirement_timestamps or {}
     requirement_by_id = {req["id"]: req for req in requirements}
     baseline_by_visual = {row["Visual ID"]: row for row in baseline_rows}
     status_by_visual = _requirement_status_by_visual(requirements, mapping)
@@ -551,6 +631,8 @@ def _build_visual_requirement_rows(requirements, mapping, baseline_rows, require
             )
             sequence = next((index for index, item in enumerate(history, start=1)
                              if item["id"] == requirement_id), 1)
+            requirement_date, requirement_time = requirement_timestamps.get(
+                requirement_id.casefold(), (generated_date, generated_time))
             rows.append({
                 "Requirement Number": (requirement_numbers or {}).get(
                     (requirement_id, visual_id), _requirement_number(
@@ -570,7 +652,7 @@ def _build_visual_requirement_rows(requirements, mapping, baseline_rows, require
                 "Impact Basis": baseline.get("Impact Basis", ""),
                 "Review Flag": "Yes" if entry.get("warnings") or
                 "transitive_dependency" in (baseline.get("Impact Basis", "")) else "",
-                "Generated Date": generated_date, "Generated Time": generated_time,
+                "Generated Date": requirement_date, "Generated Time": requirement_time,
             })
     current_numbers = {row["Requirement Number"] for row in rows}
     for old_row in (previous_history or {}).get("impact", []):
@@ -583,8 +665,6 @@ def _build_visual_requirement_rows(requirements, mapping, baseline_rows, require
         if historical["Requirement Number"] in current_numbers:
             continue
         historical["Requirement Status"] = "Obsolete"
-        historical["Generated Date"] = generated_date
-        historical["Generated Time"] = generated_time
         rows.append({header: historical.get(header, "") for header in IMPACT_HEADERS})
     return rows
 

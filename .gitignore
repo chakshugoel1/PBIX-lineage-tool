@@ -8,6 +8,8 @@ __pycache__/
 
 # Runtime output archives created by the app
 previous_runs/
+output/
+local_data/
 logs/
 
 # Proprietary sample data used for local development/testing only -
@@ -33,6 +35,5 @@ Final_Source_Comparison_*_backup.xlsx
 Review_Transformations_Real_Data.xlsx
 ~$*.xlsx
 guid_dataflow_names.json
-PowerBIDataflows/
 _validation_output.txt
 PBIX → Dataflow → Source Lineage Project Status.docx

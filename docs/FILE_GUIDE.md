@@ -29,20 +29,16 @@ This lists the purpose of each application file and groups data-heavy/generated 
 | `docs/REQUIREMENTS_TEMPLATE_GUIDE.md` | Plain-language instructions for completing the requirements workbook. |
 | `templates/Requirements_Template.xlsx` | Ready-to-fill requirements workbook for Baseline Estimation. |
 
-## Root: local inputs and outputs
+## Local inputs and outputs
 
 | File or group | Purpose |
 |---|---|
-| `guid_dataflow_names.json` | Local cache/mapping for GUID-only dataflow references; not safely reproducible in every environment. |
-| `visual_descriptions.json` | Local cache of visual descriptions and history for the current output folder. |
-| `Baseline_Estimation_*.xlsx` | Generated baseline/RTM workbook. |
-| `Generated_*_Lineage.xlsx` | Generated main source-lineage workbook. |
-| `Dataflow_Table_Lineage_Report_*.xlsx` | Generated companion table-lineage workbook. |
-| `CASHPLUS-DASHBOARD 1.xlsx` | Local reference workbook for optional comparison. |
-| `Review_Transformations_Real_Data.xlsx` | Local transformation review workbook. |
-| `*.pbix` | Local report inputs; large, potentially sensitive, and ignored by Git. |
-| `CygnusIN.pbip` | Power BI project entry point for the report/model folders. |
-| `PBIX -> Dataflow -> Source Lineage Project Status.docx` | Local project-status document (the on-disk filename uses arrow characters). |
+| `local_data/dataflows/` | Exported dataflow JSON files and `guid_dataflow_names.json`, the local GUID-to-name cache. |
+| `local_data/pbix/` | Local PBIX inputs and the CygnusIN PBIP project; large, potentially sensitive, and ignored by Git. |
+| `local_data/reference_workbooks/` | Reference and review workbooks, plus the local project-status document. |
+| `output/lineage/` | Generated lineage/comparison workbooks and their `previous_runs` archive. |
+| `output/baseline/` | Generated baseline/RTM workbooks and visual-description cache. |
+| `output/impact/` | Generated model-change-impact workbooks and their `previous_runs` archive. |
 | `_compare_grains.py` | Untracked local diagnostic script; review before retention or removal. |
 
 ## Application packages

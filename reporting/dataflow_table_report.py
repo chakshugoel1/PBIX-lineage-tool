@@ -251,6 +251,8 @@ def write_table_lineage_sheet(wb, rows):
 
 def write_workbook(rows, output_path=None):
     output_path = output_path or OUTPUT_PATH
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    os.makedirs(output_dir, exist_ok=True)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     write_overview_sheet(wb, rows)

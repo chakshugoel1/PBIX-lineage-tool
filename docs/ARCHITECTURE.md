@@ -28,6 +28,24 @@ Root compatibility scripts
 
 `gui/worker.py` keeps long operations off the UI thread. Workers derive output names, optionally archive existing outputs, check cancellation between expensive stages, convert exceptions into user-facing failure signals, and return compact result counts. `config.py` supplies defaults for script use; GUI selections override those defaults.
 
+## Local workspace layout
+
+```text
+local_data/
+	pbix/                  local PBIX files and PBIP projects
+	dataflows/             exported dataflow JSON and GUID-name cache
+	reference_workbooks/   comparison/review workbooks and local notes
+
+output/
+	lineage/               source-lineage workbooks
+	baseline/              baseline-estimation workbooks and visual cache
+	impact/                model-change-impact workbooks
+```
+
+Each output folder retains the existing `previous_runs/<timestamp>/` archive
+and model-impact history behavior. These local-data and output folders are
+ignored by Git so client assets and generated workbooks are not published.
+
 ## Source lineage and dataflow export
 
 **Dataflow export**

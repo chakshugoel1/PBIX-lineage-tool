@@ -22,9 +22,9 @@ def _p(*parts):
 
 
 # --- Inputs ---------------------------------------------------------------
-PBIX_PATH = _p("DTS - CashPlus-Dashboard (1).pbix")
-DATAFLOW_FOLDER = _p("PowerBIDataflows")
-TARGET_XLSX = _p("CASHPLUS-DASHBOARD 1.xlsx")
+PBIX_PATH = _p("local_data", "pbix", "DTS - CashPlus-Dashboard (1).pbix")
+DATAFLOW_FOLDER = _p("local_data", "dataflows")
+TARGET_XLSX = _p("local_data", "reference_workbooks", "CASHPLUS-DASHBOARD 1.xlsx")
 
 def pbix_stem(pbix_path):
     """Filesystem-safe stem derived from a PBIX file's basename, for naming output reports."""
@@ -42,12 +42,18 @@ MAX_DEPENDENCY_DEPTH = 25
 POWERSHELL_EXPORT_TIMEOUT = 600  # 10 minutes
 
 # --- Outputs ----------------------------------------------------------------
-GENERATED_XLSX = _p(f"Generated_{_PBIX_STEM}_Lineage.xlsx")
-COMPARISON_XLSX = _p(f"Final_Source_Comparison_{_PBIX_STEM}.xlsx")
+LINEAGE_OUTPUT_FOLDER = _p("output", "lineage")
+BASELINE_OUTPUT_FOLDER = _p("output", "baseline")
+IMPACT_OUTPUT_FOLDER = _p("output", "impact")
+
+GENERATED_XLSX = _p("output", "lineage", f"Generated_{_PBIX_STEM}_Lineage.xlsx")
+COMPARISON_XLSX = _p("output", "lineage", f"Final_Source_Comparison_{_PBIX_STEM}.xlsx")
 
 # Companion report: PBIX -> Dataflow -> Physical Source lineage in the
 # "Table Lineage" / "Overview" column layout (see
 # build_dataflow_table_lineage_report.py). This is the authoritative,
 # self-contained report for future PBIX files where no target/reference
 # workbook exists to validate against.
-DATAFLOW_LINEAGE_XLSX = _p(f"Dataflow_Table_Lineage_Report_{_PBIX_STEM}.xlsx")
+DATAFLOW_LINEAGE_XLSX = _p(
+    "output", "lineage", f"Dataflow_Table_Lineage_Report_{_PBIX_STEM}.xlsx"
+)

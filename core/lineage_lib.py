@@ -45,7 +45,10 @@ def powerbi_service_url(workspace_id, dataflow_id):
     return f"https://app.powerbi.com/groups/{workspace_id}/dataflows/{dataflow_id}"
 
 
-GUID_CACHE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "guid_dataflow_names.json")
+GUID_CACHE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "local_data", "dataflows", "guid_dataflow_names.json",
+)
 
 
 def load_guid_cache(path=None):

@@ -66,14 +66,15 @@ Edit **`config.py`** — it's the single place every script reads its input/
 output paths from:
 
 ```python
-PBIX_PATH = _p("DTS - CashPlus-Dashboard (1).pbix")   # your .pbix file
-DATAFLOW_FOLDER = _p("PowerBIDataflows")               # folder of exported dataflow JSON files
-TARGET_XLSX = _p("CASHPLUS-DASHBOARD 1.xlsx")          # existing/reference lineage workbook to compare against
+PBIX_PATH = _p("local_data", "pbix", "DTS - CashPlus-Dashboard (1).pbix")
+DATAFLOW_FOLDER = _p("local_data", "dataflows")
+TARGET_XLSX = _p("local_data", "reference_workbooks", "CASHPLUS-DASHBOARD 1.xlsx")
 ```
 
-Paths are resolved relative to the project folder by default (via `_p(...)`)
-so the whole folder can be copied/cloned anywhere without further edits, as
-long as the files keep the same names. To use files that live elsewhere,
+Paths are resolved relative to the project folder by default (via `_p(...)`).
+Local PBIX files, dataflow exports, and reference workbooks belong under
+`local_data/`; generated reports belong under `output/`. These folders are
+ignored by Git. To use files that live elsewhere,
 just replace `_p("...")` with an absolute path string for that entry.
 
 ## Running the pipeline
