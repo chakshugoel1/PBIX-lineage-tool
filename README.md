@@ -182,21 +182,26 @@ or comparison file is required.
 3. Filter the generated Excel tables to the objects relevant to the planned
    development.
 
-The generated `Baseline_Estimation_<pbix name>.xlsx` contains one consolidated
-`Baseline Estimation` worksheet. It includes every table, measure, column, and
-relationship, mapped to affected Visual IDs, page names, visual names, and
-impact basis. The first column, `Requirement ID`, is populated when the
-selected requirements workbook maps a Visual ID and is intentionally left
-blank otherwise. One Visual ID should be assigned to only one requirement.
+The generated `Baseline_Estimation_<pbix name>.xlsx` includes an `RTM` sheet
+with visual-level impact rows and an `Object Dependencies` sheet with one row
+for every table, measure, column (including calculated columns), and
+relationship, including objects with no visual impact. The object sheet shows
+definitions, calculated status, direct DAX references, downstream dependent
+objects, directly bound visuals, dependency-linked visuals, and affected pages.
+The `Requirement Copy` and `Visual Impact by Requirement` sheets support
+requirement traceability. Requirement numbers are populated from mapped
+requirements where available; otherwise the report generates a visual-based
+number.
 
 Configured visual titles are used as names. When a visual is genuinely
 untitled, the report says so explicitly and generates a useful label from its
 visual type and bound object instead of silently displaying its internal ID as
 the name.
 
-Measure and calculated-column dependencies are inferred from DAX references.
-Table and relationship selections deliberately use the same broad impact rule
-as Version 2 because they can alter filter propagation across many columns.
+Measure and calculated-column dependencies are inferred from DAX references;
+the scan is heuristic rather than a full DAX parser. Table and relationship
+impact uses a deliberately broad rule, as in Version 2, because they can alter
+filter propagation across many columns.
 
 When a requirements workbook is selected, separate requirement sheets are
 added without changing the baseline inventory. `Requirement Impact` lists the

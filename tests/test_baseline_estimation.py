@@ -140,7 +140,7 @@ def test_report_has_consolidated_baseline_grain_and_headers(tmp_path):
     sheet = workbook["RTM"]
 
     assert workbook.sheetnames == [
-        "RTM", "Requirement Copy", "Visual Impact by Requirement",
+        "RTM", "Object Dependencies", "Requirement Copy", "Visual Impact by Requirement",
     ]
     assert [cell.value for cell in sheet[1]] == [
         "Requirement Number", "Requirement Status", "Visual ID", "Page Name", "Visual Name",
@@ -159,6 +159,33 @@ def test_report_has_consolidated_baseline_grain_and_headers(tmp_path):
     assert by_visual["kpi"][3] == "Overview"
     assert by_visual["kpi"][11] == "Displays _Measures[Total Sales YTD] as a KPI."
     assert by_visual["kpi"][15] and by_visual["kpi"][16]
+
+
+def test_object_dependencies_sheet_lists_inventory_and_dependency_paths(tmp_path):
+    snapshot = _snapshot()
+    snapshot["tables"]["Sales"]["columns"].append({
+        **_column("Calculated Amount"),
+        "is_calculated": True,
+        "expression": "Sales[Amount] * 2",
+    })
+    output_path = tmp_path / "object-dependencies.xlsx"
+
+    baseline_estimation.build_report(snapshot, _layout(), str(output_path))
+    sheet = load_workbook(output_path)["Object Dependencies"]
+    headers = [cell.value for cell in sheet[1]]
+    rows = [dict(zip(headers, row)) for row in sheet.iter_rows(min_row=2, values_only=True)]
+    by_object = {row["Object"]: row for row in rows}
+
+    assert len(rows) == 10
+    assert by_object["Sales[Calculated Amount]"]["Object Type"] == "Calculated Column"
+    assert by_object["Sales[Calculated Amount]"]["Is Calculated"] == "Yes"
+    assert by_object["Sales[Calculated Amount]"]["Direct Dependencies"] == "Column: Sales[Amount]"
+    assert "Measure: _Measures[Total Sales YTD]" in by_object[
+        "_Measures[Total Sales]"
+    ]["Downstream Dependents (Direct + Transitive)"]
+    assert "Sales KPI" in by_object["_Measures[Total Sales]"]["Dependency-Linked Visuals"]
+    assert by_object["_Measures[Unused]"]["Directly Bound Visuals"] in (None, "")
+    assert by_object["_Measures[Unused]"]["Dependency-Linked Visuals"] in (None, "")
 
 
 def test_all_object_report_includes_every_object_and_summary_counts(tmp_path):
@@ -231,7 +258,7 @@ def test_requirements_driven_report_and_history_round_trip(tmp_path):
     assert summary["mapped_objects"] >= 1
     workbook = load_workbook(output_path)
     assert workbook.sheetnames == [
-        "RTM", "Requirement Copy", "Visual Impact by Requirement",
+        "RTM", "Object Dependencies", "Requirement Copy", "Visual Impact by Requirement",
     ]
     requirement_rows = list(workbook["Requirement Copy"].iter_rows(min_row=2, values_only=True))
     assert requirement_rows[0][0] == "R-1"

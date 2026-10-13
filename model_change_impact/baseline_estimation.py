@@ -42,6 +42,11 @@ IMPACT_HEADERS = [
     "Columns", "Tables", "Relationships", "Page Filters", "Visual Filters",
     "Visual Description", "Impact Basis", "Review Flag", "Generated Date", "Generated Time",
 ]
+OBJECT_DEPENDENCY_HEADERS = [
+    "Object Type", "Object", "Table", "Object Definition", "Is Calculated",
+    "Direct Dependencies", "Downstream Dependents (Direct + Transitive)",
+    "Directly Bound Visuals", "Dependency-Linked Visuals", "Affected Pages",
+]
 
 
 def list_selectable_objects(snapshot):
@@ -153,6 +158,8 @@ def build_report(snapshot, report_layout, selections_or_output_path, output_path
     sheet = workbook.active
     sheet.title = "RTM"
     baseline_rows = _build_baseline_estimation_rows(baseline_impact, report_layout, descriptions)
+    object_dependency_rows = _build_object_dependency_rows(
+        snapshot, baseline_selections, baseline_impact)
     generated_at = datetime.now()
     generated_date = generated_at.date().isoformat()
     generated_time = generated_at.strftime("%H:%M:%S")
@@ -191,6 +198,8 @@ def build_report(snapshot, report_layout, selections_or_output_path, output_path
         requirements, mapping, baseline_rows, requirement_numbers, previous_history,
         requirement_timestamps)
     _write_rtm_sheet(sheet, rtm_rows)
+    _write_object_dependencies_sheet(
+        workbook.create_sheet("Object Dependencies"), object_dependency_rows)
     _write_rows(workbook.create_sheet("Requirement Copy"), REQUIREMENT_HEADERS,
                 _build_requirement_rows(
                     requirements, baseline_rows, generated_date, generated_time,
@@ -676,6 +685,106 @@ def _write_rows(sheet, headers, rows):
     sheet.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{max(sheet.max_row, 1)}"
     excel_report._apply_wrap(sheet)
     excel_report._autofit_columns(sheet)
+
+
+def _build_object_dependency_rows(snapshot, selections, impact_result):
+    records_by_key = {}
+    for kind, section in SECTION_BY_KIND.items():
+        kind_selections = [item for item in selections if item["kind"] == kind]
+        for selection, record in zip(kind_selections, impact_result.get(section, [])):
+            records_by_key[selection_key(selection)] = record
+
+    dependency_graph = impact.build_dependency_graph(snapshot)
+    rows = []
+    for item in selections:
+        kind = item["kind"]
+        object_key = selection_key(item)
+        record = records_by_key.get(object_key, {})
+        definition = ""
+        is_calculated = ""
+        object_type = kind.title()
+
+        if kind == "table":
+            details = snapshot.get("tables", {}).get(item["table"], {})
+            definition = details.get("m_expression") or ""
+            is_calculated = "Yes" if details.get("is_calculated_table") else "No"
+            if details.get("is_calculated_table"):
+                object_type = "Calculated Table"
+        elif kind == "measure":
+            details = snapshot.get("measures", {}).get(item["table"], {}).get(item["name"], {})
+            definition = details.get("expression") or ""
+            is_calculated = "Yes"
+        elif kind == "column":
+            details = next(
+                (column for column in snapshot.get("tables", {}).get(item["table"], {}).get("columns", [])
+                 if column.get("name") == item["name"]),
+                {},
+            )
+            definition = details.get("expression") or ""
+            is_calculated = "Yes" if details.get("is_calculated") else "No"
+            if details.get("is_calculated"):
+                object_type = "Calculated Column"
+        else:
+            definition = item["display"]
+
+        direct_dependencies = dependency_graph.get(object_key, set())
+        dependent_objects = record.get("dependent_objects", [])
+        visuals = record.get("impacted_visuals", [])
+        direct_visuals = [visual for visual in visuals if visual.get("matched_via") == "direct"]
+        dependency_visuals = [
+            visual for visual in visuals
+            if visual.get("matched_via") == "transitive_dependency"
+        ]
+        affected_pages = {
+            visual.get("page_display_name") or visual.get("page_id") or ""
+            for visual in visuals
+        }
+
+        rows.append({
+            "Object Type": object_type,
+            "Object": item["display"],
+            "Table": item.get("table") or item.get("from_table") or "",
+            "Object Definition": definition,
+            "Is Calculated": is_calculated,
+            "Direct Dependencies": "; ".join(sorted(
+                (_format_dependency_object(dependency) for dependency in direct_dependencies),
+                key=str.casefold,
+            )),
+            "Downstream Dependents (Direct + Transitive)": "; ".join(sorted(
+                (_format_dependency_object(dependent) for dependent in dependent_objects),
+                key=str.casefold,
+            )),
+            "Directly Bound Visuals": "; ".join(sorted(
+                (_format_dependency_visual(visual) for visual in direct_visuals),
+                key=str.casefold,
+            )),
+            "Dependency-Linked Visuals": "; ".join(sorted(
+                (_format_dependency_visual(visual) for visual in dependency_visuals),
+                key=str.casefold,
+            )),
+            "Affected Pages": "; ".join(sorted(
+                (page for page in affected_pages if page), key=str.casefold,
+            )),
+        })
+    return rows
+
+
+def _format_dependency_object(item):
+    kind = item[0] if isinstance(item, tuple) else item.get("kind", "object")
+    table = item[1] if isinstance(item, tuple) else item.get("table", "")
+    name = item[2] if isinstance(item, tuple) else item.get("name", "")
+    return f"{kind.title()}: {table}[{name}]" if table else f"{kind.title()}: {name}"
+
+
+def _format_dependency_visual(visual):
+    visual_name = visual.get("visual_display_name") or "(Untitled visual)"
+    page_name = visual.get("page_display_name") or visual.get("page_id") or ""
+    visual_id = visual.get("visual_id") or ""
+    return f"{visual_name} ({page_name}; {visual_id})"
+
+
+def _write_object_dependencies_sheet(sheet, rows):
+    _write_rows(sheet, OBJECT_DEPENDENCY_HEADERS, rows)
 
 
 def _record_history(history_db_path, snapshot, report_layout, mapping):
